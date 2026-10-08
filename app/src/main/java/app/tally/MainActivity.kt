@@ -123,6 +123,7 @@ private fun TallyRoot() {
                     onOpenAppInfo = { WalletListenerService.openAppInfo(context) },
                     onSetBalance = { sheet = Sheet.Balance },
                     onCurrency = { ExpenseStore.setCurrency(it) },
+                    onForget = { ExpenseStore.forget(it) },
                     onErase = { ExpenseStore.eraseAll() },
                 )
             }
@@ -164,8 +165,9 @@ private fun TallyRoot() {
             sheet = current,
             currency = state.currency,
             currentBalance = state.currentBalance,
+            learned = state.learned,
             onDismiss = { sheet = null },
-            onSave = { ExpenseStore.upsert(it); sheet = null },
+            onSave = { e, taught -> ExpenseStore.save(e, taught); sheet = null },
             onDelete = { sheet = null; deleteWithUndo(it) },
             onSetBalance = { ExpenseStore.setBalance(it); sheet = null },
         )

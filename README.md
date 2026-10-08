@@ -15,6 +15,11 @@ digits. That becomes an expense, gets a category guessed from the merchant name,
 from your balance.
 
 - **Balance** is whatever you last entered, minus every expense dated after you entered it.
+- **Auto-categories**: built-in keyword rules guess the category from the merchant name
+  (Starbucks → Food, Uber → Transport…). Change a payment's category once and Tally **learns** that
+  place: future taps there are filed the same way, older untagged payments from it are re-filed, and
+  other branches of the same brand follow. The newest tag wins straight away, so it adapts if you
+  change your mind. You can see and forget what it learned under Settings → Learned places.
 - **Manual expenses**: tap **+**. Tap any row to edit it; swipe left to delete it (you get an Undo).
 - **Captured notifications** (Settings): the last 40 Wallet notifications and what Tally made of
   them. If a tap didn't show up, look here first.
@@ -47,7 +52,8 @@ You need JDK 17 and the Android SDK (API 35).
 
 | Path | What |
 | --- | --- |
-| `parser/WalletParser.kt` | Notification text → amount, merchant, card; guesses the category |
+| `parser/WalletParser.kt` | Notification text → amount, merchant, card; keyword category rules |
+| `parser/Classifier.kt` | Learns merchant → category from your tagging |
 | `service/WalletListenerService.kt` | Notification listener, Wallet packages only |
 | `data/ExpenseStore.kt` | State and JSON persistence; skips duplicate notifications |
 | `ui/` | Home, add/edit sheet, settings, theme |

@@ -49,7 +49,8 @@ import androidx.compose.ui.unit.sp
 import app.tally.data.Category
 import app.tally.data.Expense
 import app.tally.data.Source
-import app.tally.parser.WalletParser
+import app.tally.parser.Classifier
+import app.tally.parser.Learned
 import app.tally.ui.theme.Tally
 import java.time.Instant
 import java.time.LocalDate
@@ -74,8 +75,9 @@ fun TallySheet(
     sheet: Sheet,
     currency: String,
     currentBalance: Double?,
+    learned: Learned,
     onDismiss: () -> Unit,
-    onSave: (Expense) -> Unit,
+    onSave: (expense: Expense, taught: Boolean) -> Unit,
     onDelete: (Expense) -> Unit,
     onSetBalance: (Double) -> Unit,
 ) {
@@ -97,8 +99,8 @@ fun TallySheet(
     ) {
         when (sheet) {
             Sheet.Balance -> BalanceForm(currency, currentBalance, onSetBalance)
-            Sheet.NewExpense -> ExpenseForm(null, currency, onSave, onDelete)
-            is Sheet.EditExpense -> ExpenseForm(sheet.expense, currency, onSave, onDelete)
+            Sheet.NewExpense -> ExpenseForm(null, currency, learned, onSave, onDelete)
+            is Sheet.EditExpense -> ExpenseForm(sheet.expense, currency, learned, onSave, onDelete)
         }
     }
 }
@@ -201,7 +203,8 @@ private fun BalanceForm(currency: String, current: Double?, onSet: (Double) -> U
 private fun ExpenseForm(
     existing: Expense?,
     currency: String,
-    onSave: (Expense) -> Unit,
+    learned: Learned,
+    onSave: (expense: Expense, taught: Boolean) -> Unit,
     onDelete: (Expense) -> Unit,
 ) {
     val zone = ZoneId.systemDefault()
@@ -209,7 +212,8 @@ private fun ExpenseForm(
     var merchant by remember { mutableStateOf(existing?.merchant.orEmpty()) }
     var note by remember { mutableStateOf(existing?.note.orEmpty()) }
     var category by remember { mutableStateOf(existing?.category ?: Category.OTHER) }
-    var categoryTouched by remember { mutableStateOf(existing != null) }
+    // True once you tap a category chip: that's a tag Tally learns from.
+    var taught by remember { mutableStateOf(false) }
     var date by remember { mutableStateOf(existing?.timestamp?.toLocalDate() ?: LocalDate.now()) }
     var picking by remember { mutableStateOf(false) }
 
@@ -232,11 +236,19 @@ private fun ExpenseForm(
 
         InputField(merchant, "Where? (e.g. Starbucks)") {
             merchant = it
-            if (!categoryTouched) category = WalletParser.guessCategory(it)
+            if (!taught && existing == null) category = Classifier.classify(it, learned)
         }
         Spacer(Modifier.height(20.dp))
 
-        SectionLabel("Category")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("Category", Modifier.weight(1f))
+            val hint = when {
+                taught && merchant.isNotBlank() -> "✨ Tally will remember this"
+                !taught && Classifier.learnedCategory(merchant, learned) == category -> "✨ Learned from your tags"
+                else -> null
+            }
+            hint?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Tally.Violet) }
+        }
         Spacer(Modifier.height(10.dp))
         Row(
             Modifier.horizontalScroll(rememberScrollState()),
@@ -245,7 +257,7 @@ private fun ExpenseForm(
             Category.entries.forEach { c ->
                 Chip("${c.emoji} ${c.label}", selected = c == category, accent = c.tint) {
                     category = c
-                    categoryTouched = true
+                    taught = true
                 }
             }
         }
@@ -285,7 +297,9 @@ private fun ExpenseForm(
                     source = existing?.source ?: Source.MANUAL,
                     note = note.trim(),
                     card = existing?.card,
+                    userTagged = existing?.userTagged ?: false,
                 ),
+                taught && merchant.isNotBlank(),
             )
         }
         if (existing != null) {

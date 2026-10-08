@@ -1,5 +1,7 @@
 package app.tally.data
 
+import app.tally.parser.Learned
+
 enum class Source { WALLET, MANUAL }
 
 enum class Category(val label: String, val emoji: String, val color: Long) {
@@ -22,6 +24,8 @@ data class Expense(
     val source: Source,
     val note: String = "",
     val card: String? = null,
+    /** You picked this category yourself, so learning never overrides it. */
+    val userTagged: Boolean = false,
 )
 
 /** A raw notification seen from a Wallet package, kept so parsing can be checked on-device. */
@@ -42,6 +46,8 @@ data class AppState(
     val balanceSetAt: Long = 0L,
     val currency: String = "₹",
     val captures: List<Capture> = emptyList(),
+    /** Merchant → category scores learned from your tagging. */
+    val learned: Learned = emptyMap(),
 ) {
     val currentBalance: Double?
         get() = balance?.let { b -> b - expenses.filter { it.timestamp > balanceSetAt }.sumOf { it.amount } }

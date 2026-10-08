@@ -55,6 +55,7 @@ fun SettingsScreen(
     onOpenAppInfo: () -> Unit,
     onSetBalance: () -> Unit,
     onCurrency: (String) -> Unit,
+    onForget: (String) -> Unit,
     onErase: () -> Unit,
 ) {
     var confirmErase by remember { mutableStateOf(false) }
@@ -166,6 +167,37 @@ fun SettingsScreen(
         }
 
         item {
+            GlassCard {
+                SectionLabel("Learned places")
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (state.learned.isEmpty()) "Change a payment's category and Tally will file that place the same way from then on."
+                    else "Future taps here get these categories. Older untagged payments were re-filed too.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Tally.Muted,
+                )
+                state.learned.entries.sortedBy { it.key }.forEach { (key, scores) ->
+                    val cat = scores.maxByOrNull { it.value }?.key ?: return@forEach
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        EmojiBadge(cat, 36.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                key.split(' ').joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } },
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(cat.label, style = MaterialTheme.typography.labelSmall, color = cat.tint)
+                        }
+                        TextButton(onClick = { onForget(key) }) { Text("Forget", color = Tally.Muted) }
+                    }
+                }
+            }
+        }
+
+        item {
             GlassCard(Modifier.pressable { showLog = !showLog }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -193,7 +225,7 @@ fun SettingsScreen(
             GlassCard(Modifier.pressable { confirmErase = true }) {
                 Text("Erase all data", style = MaterialTheme.typography.titleMedium, color = Tally.Red)
                 Text(
-                    "Deletes every expense, your balance and the capture log.",
+                    "Deletes every expense, your balance, learned places and the capture log.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Tally.Muted,
                 )

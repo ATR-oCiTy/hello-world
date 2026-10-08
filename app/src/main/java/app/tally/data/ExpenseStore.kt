@@ -1,8 +1,9 @@
 package app.tally.data
 
 import android.content.Context
+import app.tally.parser.Classifier
+import app.tally.parser.Learned
 import app.tally.parser.ParsedPayment
-import app.tally.parser.WalletParser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +49,35 @@ object ExpenseStore {
     fun upsert(expense: Expense) = mutate { s ->
         val others = s.expenses.filterNot { it.id == expense.id }
         s.copy(expenses = (others + expense).sortedByDescending { it.timestamp })
+    }
+
+    /**
+     * Saves from the edit sheet. If you picked the category yourself ([taught]), the merchant is
+     * learned and every other untagged expense from the same place is re-filed to match.
+     */
+    fun save(expense: Expense, taught: Boolean) = mutate { s ->
+        val saved = if (taught) expense.copy(userTagged = true) else expense
+        val learned = if (taught) Classifier.teach(s.learned, saved.merchant, saved.category) else s.learned
+        val others = s.expenses.filterNot { it.id == saved.id }
+        val refiled = if (taught) reclassify(others, learned, Classifier.key(saved.merchant)) else others
+        s.copy(expenses = (refiled + saved).sortedByDescending { it.timestamp }, learned = learned)
+    }
+
+    /** Drops a learned merchant; its untagged expenses go back to the keyword rules. */
+    fun forget(key: String) = mutate { s ->
+        val learned = Classifier.forget(s.learned, key)
+        s.copy(learned = learned, expenses = reclassify(s.expenses, learned, key))
+    }
+
+    private fun reclassify(expenses: List<Expense>, learned: Learned, key: String): List<Expense> {
+        val brand = key.substringBefore(' ')
+        val spreads = brand.length >= 4
+        return expenses.map { e ->
+            val k = Classifier.key(e.merchant)
+            val related = k == key || (spreads && k.substringBefore(' ') == brand)
+            if (e.userTagged || !related) e
+            else e.copy(category = Classifier.classify(e.merchant, learned))
+        }
     }
 
     fun delete(id: String) = mutate { s -> s.copy(expenses = s.expenses.filterNot { it.id == id }) }
@@ -96,7 +126,7 @@ object ExpenseStore {
                     id = newId(),
                     amount = parsed.amount,
                     merchant = parsed.merchant,
-                    category = WalletParser.guessCategory(parsed.merchant),
+                    category = Classifier.classify(parsed.merchant, s.learned),
                     timestamp = postTime,
                     source = Source.WALLET,
                     card = parsed.card,
@@ -142,7 +172,13 @@ object ExpenseStore {
                     put("source", e.source.name)
                     put("note", e.note)
                     e.card?.let { put("card", it) }
+                    put("userTagged", e.userTagged)
                 })
+            }
+        })
+        put("learned", JSONObject().apply {
+            s.learned.forEach { (merchant, scores) ->
+                put(merchant, JSONObject().apply { scores.forEach { (c, v) -> put(c.name, v) } })
             }
         })
         put("captures", JSONArray().apply {
@@ -170,6 +206,7 @@ object ExpenseStore {
                 source = runCatching { Source.valueOf(e.getString("source")) }.getOrDefault(Source.MANUAL),
                 note = e.optString("note"),
                 card = if (e.has("card")) e.getString("card") else null,
+                userTagged = e.optBoolean("userTagged"),
             )
         }
         val captures = o.optJSONArray("captures").objects().map { c ->
@@ -182,12 +219,21 @@ object ExpenseStore {
                 parsed = c.optBoolean("parsed"),
             )
         }
+        val learned = o.optJSONObject("learned")?.let { l ->
+            l.keys().asSequence().associateWith { merchant ->
+                val scores = l.getJSONObject(merchant)
+                scores.keys().asSequence().mapNotNull { c ->
+                    runCatching { Category.valueOf(c) to scores.getDouble(c) }.getOrNull()
+                }.toMap()
+            }
+        } ?: emptyMap()
         return AppState(
             expenses = expenses.sortedByDescending { it.timestamp },
             balance = if (o.has("balance")) o.getDouble("balance") else null,
             balanceSetAt = o.optLong("balanceSetAt"),
             currency = o.optString("currency", "$"),
             captures = captures,
+            learned = learned,
         )
     }
 
