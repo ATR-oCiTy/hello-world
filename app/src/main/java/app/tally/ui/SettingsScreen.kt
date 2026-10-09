@@ -49,6 +49,11 @@ private val currencies = listOf("€", "$", "£", "₹", "CHF", "zł", "kr")
 @Composable
 fun SettingsScreen(
     state: AppState,
+    modelInstalled: Boolean,
+    modelSizeMb: Long,
+    modelProgress: Float?,
+    onPickModel: () -> Unit,
+    onRemoveModel: () -> Unit,
     listenerEnabled: Boolean,
     onBack: () -> Unit,
     onOpenAccess: () -> Unit,
@@ -151,6 +156,43 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = Tally.Muted,
                     )
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                SectionLabel("On-device AI (Ask tab)")
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Dot(if (modelInstalled) Tally.Mint else Tally.Faint, 10.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        when {
+                            modelProgress != null -> "Installing… ${(modelProgress * 100).toInt()}%"
+                            modelInstalled -> "Model installed · $modelSizeMb MB"
+                            else -> "No model: Ask gives exact, instant answers"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "For free-form questions, add Gemma 3 1B. It runs fully on your phone, offline, and never sees " +
+                        "anything but your own figures. Get \"gemma3-1b-it-int4.task\" (~550 MB) from " +
+                        "huggingface.co/litert-community/Gemma3-1B-IT (free account, accept Google's licence), then pick it here. " +
+                        "Other MediaPipe .task chat models work too.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Tally.Muted,
+                )
+                Spacer(Modifier.height(14.dp))
+                if (modelProgress == null) {
+                    GradientButton(if (modelInstalled) "Replace model file" else "Choose model file", onClick = onPickModel)
+                    if (modelInstalled) {
+                        TextButton(onClick = onRemoveModel, modifier = Modifier.fillMaxWidth()) {
+                            Text("Remove model", color = Tally.Red)
+                        }
+                    }
                 }
             }
         }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -57,7 +58,13 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.tally.data.Expense
 import app.tally.data.ExpenseStore
+import app.tally.data.LocalLlm
 import app.tally.data.StatementReader
+import app.tally.logic.AskEngine
+import app.tally.ui.AskScreen
+import app.tally.ui.ChatMessage
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import app.tally.data.Source
 import app.tally.service.WalletListenerService
 import app.tally.ui.HomeScreen
@@ -92,10 +99,12 @@ private enum class Screen(val label: String, val tab: Boolean) {
     Activity("Activity", true),
     Insights("Insights", true),
     Plans("Plans", true),
+    Ask("Ask", true),
     Settings("Settings", false),
     Import("Import", false),
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalLayoutApi::class)
 @Composable
 private fun TallyRoot() {
     val context = LocalContext.current
@@ -114,6 +123,11 @@ private fun TallyRoot() {
     var statementBalance by remember { mutableStateOf<Pair<java.time.LocalDate, Double>?>(null) }
     var updateBalance by remember { mutableStateOf(true) }
     var importFileName by remember { mutableStateOf("Statement") }
+    var chat by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
+    var asking by remember { mutableStateOf(false) }
+    var useModel by rememberSaveable { mutableStateOf(true) }
+    var modelInstalled by remember { mutableStateOf(LocalLlm.isInstalled(context)) }
+    var modelProgress by remember { mutableStateOf<Float?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -136,6 +150,46 @@ private fun TallyRoot() {
             snackbar.currentSnackbarData?.dismiss()
             val result = snackbar.showSnackbar("Deleted ${e.merchant}", actionLabel = "Undo", withDismissAction = false)
             if (result == SnackbarResult.ActionPerformed) ExpenseStore.upsert(e)
+        }
+    }
+
+    fun ask(question: String) {
+        if (asking) return
+        asking = true
+        chat = chat + ChatMessage(fromUser = true, text = question)
+        scope.launch {
+            val snapshot = state
+            val today = java.time.LocalDate.now()
+            val exact = withContext(Dispatchers.Default) { AskEngine.answer(question, snapshot, today) }
+            if (modelInstalled && useModel) {
+                chat = chat + ChatMessage(fromUser = false, text = "", thinking = true)
+                val reply = runCatching {
+                    val summary = withContext(Dispatchers.Default) { AskEngine.summary(snapshot, today) }
+                    LocalLlm.generate(context, LocalLlm.prompt(summary, exact, question))
+                }
+                chat = chat.dropLast(1) + reply.fold(
+                    onSuccess = { text ->
+                        ChatMessage(false, text, source = "Gemma, from your data", figures = exact.text.takeIf { exact.understood })
+                    },
+                    onFailure = { e ->
+                        ChatMessage(false, exact.text, source = "Exact · Gemma couldn't run (${e.javaClass.simpleName})")
+                    },
+                )
+            } else {
+                chat = chat + ChatMessage(false, exact.text, source = if (exact.understood) "Exact, from your data" else "")
+            }
+            asking = false
+        }
+    }
+
+    val pickModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            modelProgress = 0f
+            runCatching { LocalLlm.install(context, uri) { p -> modelProgress = p } }
+                .onSuccess { modelInstalled = LocalLlm.isInstalled(context); toast("Model installed") }
+                .onFailure { toast("Couldn't install the model (${it.javaClass.simpleName})") }
+            modelProgress = null
         }
     }
 
@@ -198,8 +252,26 @@ private fun TallyRoot() {
                     },
                     onDismissSuggestion = { ExpenseStore.dismissSuggestion(it) },
                 )
+                Screen.Ask -> AskScreen(
+                    messages = chat,
+                    modelInstalled = modelInstalled,
+                    useModel = useModel,
+                    busy = asking,
+                    onToggleModel = { useModel = !useModel },
+                    onSettings = { go(Screen.Settings) },
+                    onSend = { ask(it) },
+                )
                 Screen.Settings -> SettingsScreen(
                     state = state,
+                    modelInstalled = modelInstalled,
+                    modelSizeMb = if (modelInstalled) LocalLlm.sizeMb(context) else 0,
+                    modelProgress = modelProgress,
+                    onPickModel = { pickModel.launch(arrayOf("*/*")) },
+                    onRemoveModel = {
+                        LocalLlm.remove(context)
+                        modelInstalled = false
+                        toast("Model removed")
+                    },
                     listenerEnabled = listenerEnabled,
                     onBack = { go(lastTab) },
                     onOpenAccess = { WalletListenerService.openSettings(context) },
@@ -262,7 +334,7 @@ private fun TallyRoot() {
         }
 
         AnimatedVisibility(
-            visible = screen.tab,
+            visible = screen.tab && !WindowInsets.isImeVisible,
             enter = fadeIn() + slideInVertically { it },
             exit = fadeOut() + slideOutVertically { it },
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -270,7 +342,7 @@ private fun TallyRoot() {
             BottomBar(
                 current = screen,
                 onSelect = { go(it) },
-                onAdd = if (screen == Screen.Insights) null else ({
+                onAdd = if (screen == Screen.Insights || screen == Screen.Ask) null else ({
                     sheet = if (screen == Screen.Plans) Sheet.NewRecurring else Sheet.NewExpense
                 }),
             )
@@ -316,13 +388,15 @@ private fun TallyRoot() {
 private fun BottomBar(current: Screen, onSelect: (Screen) -> Unit, onAdd: (() -> Unit)?) {
     Row(
         Modifier
+            .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .padding(horizontal = 16.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(
             Modifier
+                .weight(1f)
                 .shadow(20.dp, RoundedCornerShape(50), ambientColor = Color.Black, spotColor = Color.Black)
                 .clip(RoundedCornerShape(50))
                 .background(Tally.SurfaceHi.copy(alpha = 0.96f))
@@ -333,12 +407,14 @@ private fun BottomBar(current: Screen, onSelect: (Screen) -> Unit, onAdd: (() ->
                 val on = s == current
                 Box(
                     Modifier
+                        .weight(1f)
                         .clip(RoundedCornerShape(50))
                         .background(if (on) Tally.Brand else androidx.compose.ui.graphics.SolidColor(Color.Transparent))
                         .pressable { onSelect(s) }
-                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text(s.label, style = MaterialTheme.typography.labelLarge, color = if (on) Color.White else Tally.Muted)
+                    Text(s.label, style = MaterialTheme.typography.labelLarge, color = if (on) Color.White else Tally.Muted, maxLines = 1)
                 }
             }
         }
@@ -346,7 +422,7 @@ private fun BottomBar(current: Screen, onSelect: (Screen) -> Unit, onAdd: (() ->
             Box(
                 Modifier
                     .shadow(24.dp, CircleShape, ambientColor = Tally.Pink, spotColor = Tally.Pink)
-                    .size(60.dp)
+                    .size(56.dp)
                     .clip(CircleShape)
                     .background(Tally.Brand)
                     .pressable(onAdd),

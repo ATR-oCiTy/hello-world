@@ -64,6 +64,8 @@ dependencies {
 
     // Reads text out of PDF bank statements for import.
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // Runs a small language model (e.g. Gemma 3 1B) fully on the phone for the Ask tab.
+    implementation("com.google.mediapipe:tasks-genai:0.10.24")
 
     testImplementation("junit:junit:4.13.2")
 }
