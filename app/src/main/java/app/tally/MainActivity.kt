@@ -104,7 +104,7 @@ private enum class Screen(val label: String, val tab: Boolean) {
     Import("Import", false),
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalLayoutApi::class)
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun TallyRoot() {
     val context = LocalContext.current
