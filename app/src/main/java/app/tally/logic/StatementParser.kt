@@ -18,6 +18,8 @@ data class StatementLine(
     val kind: String = "",
     /** Account balance right after this transaction, when the statement shows it. */
     val balanceAfter: Double? = null,
+    /** The bank's own id for the transaction (UniCredit "Operation No."), if the statement has one. */
+    val externalId: String? = null,
 )
 
 /**

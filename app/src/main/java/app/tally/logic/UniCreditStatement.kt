@@ -59,6 +59,7 @@ object UniCreditStatement {
     private val money = Regex("""^([-+]?\d{1,3}(?: \d{3})*\.\d{2}) ([A-Z]{3})$""")
     private val iban = Regex("""^[A-Z]{2}\d{2}[A-Z0-9]{8,}$""")
     private val location = Regex(""",\s*[A-Z]{2}$""")
+    private val uuid = Regex("""(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])""")
 
     /** Null when this doesn't look like a UniCredit statement. */
     fun parse(words: List<Word>): List<StatementLine>? {
@@ -160,6 +161,8 @@ object UniCreditStatement {
             card = card,
             kind = type,
             balanceAfter = balance,
+            // The Operation No. wraps over two lines of the type column: join and pick out the UUID.
+            externalId = uuid.find(col(Col.TYPE).joinToString("") { it.replace(" ", "") })?.value,
         )
     }
 

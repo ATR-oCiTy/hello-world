@@ -145,7 +145,7 @@ private fun TallyRoot() {
             val result = runCatching {
                 withContext(Dispatchers.Default) {
                     val file = StatementReader.read(context, uri)
-                    file to ExpenseStore.findDuplicates(file.lines)
+                    file to ExpenseStore.matchImport(file.lines)
                 }
             }.getOrElse {
                 toast("Couldn't read that file (${it.javaClass.simpleName})")
@@ -154,7 +154,7 @@ private fun TallyRoot() {
             val (file, dupes) = result
             val lines = file.lines
             importFileName = file.name
-            importRows = lines.mapIndexed { i, l -> ImportRow(l, dupes[i], selected = dupes[i] == null) }
+            importRows = lines.mapIndexed { i, l -> ImportRow.of(l, dupes[i]) }
             statementBalance = lines.lastOrNull { it.balanceAfter != null }?.let { it.date to it.balanceAfter!! }
             updateBalance = statementBalance != null
             go(Screen.Import)
@@ -227,17 +227,24 @@ private fun TallyRoot() {
                     onSelectAll = { on -> importRows = importRows.map { it.copy(selected = on) } },
                     onReplacePrevious = {
                         ExpenseStore.removeImported()
-                        val dupes = ExpenseStore.findDuplicates(importRows.map { it.line })
-                        importRows = importRows.mapIndexed { i, r -> r.copy(duplicate = dupes[i], selected = dupes[i] == null) }
+                        val matches = ExpenseStore.matchImport(importRows.map { it.line })
+                        importRows = importRows.mapIndexed { i, r -> ImportRow.of(r.line, matches[i]) }
                         toast("Removed earlier imports")
                     },
                     onImport = {
-                        val chosen = importRows.filter { it.selected }.map { it.line }
+                        val chosenRows = importRows.filter { it.selected }
+                        val chosen = chosenRows.map { it.line }
+                        val replaces = chosenRows.withIndex()
+                            .filter { it.value.match?.kind == app.tally.logic.MatchKind.REPLACES_PLANNED }
+                            .associate { it.index to it.value.match!!.existing!! }
+                        val skipped = importRows
+                            .filter { !it.selected && it.match?.kind != app.tally.logic.MatchKind.DUPLICATE }
+                            .map { it.line }
                         val sb = statementBalance?.takeIf { updateBalance }
                         val balance = sb?.let {
                             it.second to it.first.atTime(23, 59, 59).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
                         }
-                        val batchId = ExpenseStore.import(chosen, importFileName, balance)
+                        val batchId = ExpenseStore.import(chosen, importFileName, balance, replaces, skipped)
                         importRows = emptyList()
                         go(Screen.Activity)
                         scope.launch {

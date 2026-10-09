@@ -35,12 +35,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.tally.data.Expense
+import app.tally.logic.ImportMatch
+import app.tally.logic.MatchKind
 import app.tally.logic.StatementLine
 import app.tally.ui.theme.Tally
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
-data class ImportRow(val line: StatementLine, val duplicate: Expense?, val selected: Boolean)
+data class ImportRow(val line: StatementLine, val match: ImportMatch?, val selected: Boolean) {
+    companion object {
+        /** New rows and real payments that replace a plan's estimate start ticked; the rest don't. */
+        fun of(line: StatementLine, match: ImportMatch?) =
+            ImportRow(line, match, selected = match == null || match.kind == MatchKind.REPLACES_PLANNED)
+    }
+}
 
 @Composable
 fun ImportScreen(
@@ -57,7 +65,9 @@ fun ImportScreen(
     onImport: () -> Unit,
 ) {
     val selected = rows.count { it.selected }
-    val dupes = rows.count { it.duplicate != null }
+    val dupes = rows.count { it.match?.kind == MatchKind.DUPLICATE }
+    val skippedBefore = rows.count { it.match?.kind == MatchKind.SKIPPED_BEFORE }
+    val replacing = rows.count { it.match?.kind == MatchKind.REPLACES_PLANNED }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -82,7 +92,13 @@ fun ImportScreen(
                     Column {
                         Text("Review import", style = MaterialTheme.typography.headlineMedium)
                         Text(
-                            "${rows.size} found · $dupes already in Tally",
+                            listOfNotNull(
+                                "${rows.size} found",
+                                "${rows.size - dupes - skippedBefore - replacing} new",
+                                "$dupes already in Tally".takeIf { dupes > 0 },
+                                "$replacing replace plan estimates".takeIf { replacing > 0 },
+                                "$skippedBefore skipped before".takeIf { skippedBefore > 0 },
+                            ).joinToString(" · "),
                             style = MaterialTheme.typography.bodyMedium,
                             color = Tally.Muted,
                         )
@@ -91,8 +107,9 @@ fun ImportScreen(
             }
             item {
                 Text(
-                    "Ticked rows get added. Ones that match something Tally already has (same amount, within 3 days) " +
-                        "start unticked. Tap ± if a row has the wrong direction.",
+                    "Ticked rows get added. Rows Tally already has (from an earlier statement, a tap or a manual entry) " +
+                        "and rows you skipped last time start unticked. Real payments for your plans replace the " +
+                        "plan's estimate. Tap ± if a row has the wrong direction.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Tally.Muted,
                 )
@@ -192,9 +209,18 @@ private fun ImportRowView(row: ImportRow, currency: String, onToggle: () -> Unit
             Text(
                 l.date.format(DateTimeFormatter.ofPattern("d MMM yyyy")) +
                     (if (l.kind.isNotEmpty()) " · ${l.kind}" else "") +
-                    (row.duplicate?.let { " · already logged as ${it.merchant}" } ?: ""),
+                    when (row.match?.kind) {
+                        MatchKind.DUPLICATE -> " · already in Tally" + (row.match?.existing?.let { if (it.merchant != l.merchant) " as ${it.merchant}" else "" } ?: "")
+                        MatchKind.SKIPPED_BEFORE -> " · skipped last time"
+                        MatchKind.REPLACES_PLANNED -> " · replaces planned ${row.match?.existing?.merchant} (${money(row.match?.existing?.amount ?: 0.0, currency)})"
+                        null -> ""
+                    },
                 style = MaterialTheme.typography.labelSmall,
-                color = if (row.duplicate != null) Tally.Orange else Tally.Muted,
+                color = when (row.match?.kind) {
+                    MatchKind.DUPLICATE, MatchKind.SKIPPED_BEFORE -> Tally.Orange
+                    MatchKind.REPLACES_PLANNED -> Tally.Violet
+                    null -> Tally.Muted
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

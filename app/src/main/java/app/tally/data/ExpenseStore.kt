@@ -1,6 +1,8 @@
 package app.tally.data
 
 import android.content.Context
+import app.tally.logic.ImportMatch
+import app.tally.logic.ImportMatcher
 import app.tally.logic.Recurrence
 import app.tally.logic.RecurringDetector
 import app.tally.logic.Suggestion
@@ -31,6 +33,7 @@ object ExpenseStore {
 
     private const val MAX_CAPTURES = 40
     private const val MAX_SEEN = 300
+    private const val MAX_SKIPPED = 3000
     private const val DUPLICATE_WINDOW_MS = 5 * 60 * 1000L
 
     private val writer = Executors.newSingleThreadExecutor()
@@ -132,32 +135,32 @@ object ExpenseStore {
 
     // ---------- Statement import ----------
 
-    /** Index-aligned with [lines]: the already-logged transaction each line matches, if any. */
-    fun findDuplicates(lines: List<StatementLine>): List<Expense?> {
-        val zone = ZoneId.systemDefault()
-        val used = mutableSetOf<String>()
-        val existing = _state.value.expenses.map { it to it.timestampDate(zone) }
-        return lines.map { l ->
-            existing
-                .filter { (e, d) ->
-                    val days = abs(ChronoUnit.DAYS.between(d, l.date))
-                    e.id !in used && e.income == l.income && abs(e.amount - l.amount) < 0.01 &&
-                        // Re-importing the same statement matches exactly; taps and plans can be a few days off.
-                        if (e.source == Source.IMPORT) days == 0L else days <= 3
-                }
-                .minByOrNull { (_, d) -> abs(ChronoUnit.DAYS.between(d, l.date)) }
-                ?.first
-                ?.also { used += it.id }
-        }
+    /** Index-aligned with [lines]: what Tally already has for each statement row, if anything. */
+    fun matchImport(lines: List<StatementLine>): List<ImportMatch?> {
+        val st = _state.value
+        return ImportMatcher.match(lines, st.expenses, st.recurring, st.skippedImports)
     }
 
     /**
      * Adds [lines] as one batch and returns its id. [balance] (amount, as-of millis) optionally
      * sets the balance from the statement too.
      */
-    fun import(lines: List<StatementLine>, fileName: String, balance: Pair<Double, Long>? = null): String {
+    fun import(
+        lines: List<StatementLine>,
+        fileName: String,
+        balance: Pair<Double, Long>? = null,
+        /** Plan estimates to swap for the real row, keyed by index into [lines]. */
+        replaces: Map<Int, Expense> = emptyMap(),
+        /** Rows you unticked; remembered so the next overlapping statement leaves them unticked too. */
+        skipped: List<StatementLine> = emptyList(),
+    ): String {
         val batchId = newId()
-        mutate { s -> importInto(s, lines, batchId, fileName, balance) }
+        mutate { s ->
+            val withoutEstimates = s.copy(expenses = s.expenses.filterNot { e -> replaces.values.any { it.id == e.id } })
+            importInto(withoutEstimates, lines, batchId, fileName, balance, replaces).let { next ->
+                next.copy(skippedImports = (next.skippedImports + skipped.map(ImportMatcher::fingerprint)).takeLast(MAX_SKIPPED).toSet())
+            }
+        }
         return batchId
     }
 
@@ -167,6 +170,7 @@ object ExpenseStore {
         batchId: String,
         fileName: String,
         balance: Pair<Double, Long>?,
+        replaces: Map<Int, Expense>,
     ): AppState {
         val zone = ZoneId.systemDefault()
         val added = lines.mapIndexed { i, l ->
@@ -191,6 +195,9 @@ object ExpenseStore {
                 card = l.card,
                 income = l.income,
                 importId = batchId,
+                externalId = l.externalId,
+                // The real payment takes over the estimate's place in its plan.
+                recurringId = replaces[i]?.recurringId,
             )
         }
         val batch = ImportBatch(
@@ -203,6 +210,7 @@ object ExpenseStore {
             setBalanceAt = balance?.second,
             previousBalance = s.balance,
             previousBalanceSetAt = s.balanceSetAt,
+            replaced = replaces.values.toList(),
         )
         val linked = s.recurring.fold(added) { acc, r -> link(acc, r) }
         return s.copy(
@@ -220,8 +228,9 @@ object ExpenseStore {
     fun removeImport(batchId: String) = mutate { s ->
         val batch = s.imports.firstOrNull { it.id == batchId }
         val restore = batch?.setBalanceAt != null && s.balanceSetAt == batch.setBalanceAt
+        val restored = batch?.replaced.orEmpty().filter { r -> s.expenses.none { it.id == r.id } }
         s.copy(
-            expenses = s.expenses.filterNot { it.importId == batchId },
+            expenses = (s.expenses.filterNot { it.importId == batchId } + restored).sortedByDescending { it.timestamp },
             imports = s.imports.filterNot { it.id == batchId },
             balance = if (restore) batch!!.previousBalance else s.balance,
             balanceSetAt = if (restore) batch!!.previousBalanceSetAt else s.balanceSetAt,
@@ -367,6 +376,7 @@ object ExpenseStore {
                     b.setBalanceAt?.let { put("setBalanceAt", it) }
                     b.previousBalance?.let { put("previousBalance", it) }
                     put("previousBalanceSetAt", b.previousBalanceSetAt)
+                    put("replaced", JSONArray().apply { b.replaced.forEach { put(expenseJson(it)) } })
                 })
             }
         })
@@ -392,24 +402,8 @@ object ExpenseStore {
                 })
             }
         })
-        put("expenses", JSONArray().apply {
-            s.expenses.forEach { e ->
-                put(JSONObject().apply {
-                    put("id", e.id)
-                    put("amount", e.amount)
-                    put("merchant", e.merchant)
-                    put("category", e.category.name)
-                    put("timestamp", e.timestamp)
-                    put("source", e.source.name)
-                    put("note", e.note)
-                    e.card?.let { put("card", it) }
-                    put("userTagged", e.userTagged)
-                    put("income", e.income)
-                    e.recurringId?.let { put("recurringId", it) }
-                    e.importId?.let { put("importId", it) }
-                })
-            }
-        })
+        put("expenses", JSONArray().apply { s.expenses.forEach { put(expenseJson(it)) } })
+        put("skippedImports", JSONArray(s.skippedImports.toList()))
         put("learned", JSONObject().apply {
             s.learned.forEach { (merchant, scores) ->
                 put(merchant, JSONObject().apply { scores.forEach { (c, v) -> put(c.name, v) } })
@@ -430,22 +424,7 @@ object ExpenseStore {
     }
 
     private fun decode(o: JSONObject): AppState {
-        val expenses = o.optJSONArray("expenses").objects().map { e ->
-            Expense(
-                id = e.getString("id"),
-                amount = e.getDouble("amount"),
-                merchant = e.getString("merchant"),
-                category = runCatching { Category.valueOf(e.getString("category")) }.getOrDefault(Category.OTHER),
-                timestamp = e.getLong("timestamp"),
-                source = runCatching { Source.valueOf(e.getString("source")) }.getOrDefault(Source.MANUAL),
-                note = e.optString("note"),
-                card = if (e.has("card")) e.getString("card") else null,
-                userTagged = e.optBoolean("userTagged"),
-                income = e.optBoolean("income"),
-                recurringId = if (e.has("recurringId")) e.getString("recurringId") else null,
-                importId = if (e.has("importId")) e.getString("importId") else null,
-            )
-        }
+        val expenses = o.optJSONArray("expenses").objects().map(::expenseFrom)
         val captures = o.optJSONArray("captures").objects().map { c ->
             Capture(
                 time = c.getLong("time"),
@@ -489,6 +468,8 @@ object ExpenseStore {
             currency = o.optString("currency", "€"),
             recurring = recurring,
             monthlyBudget = if (o.has("monthlyBudget")) o.getDouble("monthlyBudget") else null,
+            skippedImports = o.optJSONArray("skippedImports")
+                ?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }.orEmpty(),
             dismissedSuggestions = o.optJSONArray("dismissedSuggestions")
                 ?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }.orEmpty(),
             imports = o.optJSONArray("imports").objects().map { b ->
@@ -502,12 +483,45 @@ object ExpenseStore {
                     setBalanceAt = if (b.has("setBalanceAt")) b.getLong("setBalanceAt") else null,
                     previousBalance = if (b.has("previousBalance")) b.getDouble("previousBalance") else null,
                     previousBalanceSetAt = b.optLong("previousBalanceSetAt"),
+                    replaced = b.optJSONArray("replaced").objects().map(::expenseFrom),
                 )
             },
             captures = captures,
             learned = learned,
         )
     }
+
+    private fun expenseJson(e: Expense) = JSONObject().apply {
+        put("id", e.id)
+        put("amount", e.amount)
+        put("merchant", e.merchant)
+        put("category", e.category.name)
+        put("timestamp", e.timestamp)
+        put("source", e.source.name)
+        put("note", e.note)
+        e.card?.let { put("card", it) }
+        put("userTagged", e.userTagged)
+        put("income", e.income)
+        e.recurringId?.let { put("recurringId", it) }
+        e.importId?.let { put("importId", it) }
+        e.externalId?.let { put("externalId", it) }
+    }
+
+    private fun expenseFrom(e: JSONObject) = Expense(
+        id = e.getString("id"),
+        amount = e.getDouble("amount"),
+        merchant = e.getString("merchant"),
+        category = runCatching { Category.valueOf(e.getString("category")) }.getOrDefault(Category.OTHER),
+        timestamp = e.getLong("timestamp"),
+        source = runCatching { Source.valueOf(e.getString("source")) }.getOrDefault(Source.MANUAL),
+        note = e.optString("note"),
+        card = if (e.has("card")) e.getString("card") else null,
+        userTagged = e.optBoolean("userTagged"),
+        income = e.optBoolean("income"),
+        recurringId = if (e.has("recurringId")) e.getString("recurringId") else null,
+        importId = if (e.has("importId")) e.getString("importId") else null,
+        externalId = if (e.has("externalId")) e.getString("externalId") else null,
+    )
 
     private fun JSONArray?.objects(): List<JSONObject> =
         if (this == null) emptyList() else (0 until length()).map { getJSONObject(it) }

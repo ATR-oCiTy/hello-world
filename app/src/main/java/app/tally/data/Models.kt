@@ -36,6 +36,8 @@ data class Expense(
     val recurringId: String? = null,
     /** The [ImportBatch] this came from, so a bad import can be removed on its own. */
     val importId: String? = null,
+    /** The bank's id for this transaction, from the statement it was imported from. */
+    val externalId: String? = null,
 ) {
     /** Posted by a plan, or a past bank transaction that a plan stands for. */
     val isPlanned: Boolean get() = source == Source.RECURRING || recurringId != null
@@ -101,6 +103,8 @@ data class ImportBatch(
     val setBalanceAt: Long? = null,
     val previousBalance: Double? = null,
     val previousBalanceSetAt: Long = 0L,
+    /** Plan estimates this import replaced with real bank rows; put back if the import is removed. */
+    val replaced: List<Expense> = emptyList(),
 )
 
 /** A raw notification seen from a Wallet package, kept so parsing can be checked on-device. */
@@ -129,6 +133,8 @@ data class AppState(
     val imports: List<ImportBatch> = emptyList(),
     /** Detected-plan suggestions you dismissed (merchant keys), so they don't come back. */
     val dismissedSuggestions: Set<String> = emptySet(),
+    /** Fingerprints of statement rows you unticked, so overlapping statements don't re-offer them. */
+    val skippedImports: Set<String> = emptySet(),
 ) {
     val currentBalance: Double?
         get() = balance?.let { b -> b + expenses.filter { it.timestamp > balanceSetAt }.sumOf { it.signed } }
