@@ -56,13 +56,14 @@ fun SettingsScreen(
     onSetBalance: () -> Unit,
     onSetBudget: () -> Unit,
     onImport: () -> Unit,
-    onRemoveImported: () -> Unit,
+    onRemoveImport: (app.tally.data.ImportBatch?) -> Unit,
     onCurrency: (String) -> Unit,
     onForget: (String) -> Unit,
     onErase: () -> Unit,
 ) {
     var confirmErase by remember { mutableStateOf(false) }
     var showLog by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf<Pair<app.tally.data.ImportBatch?, String>?>(null) }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -257,16 +258,32 @@ fun SettingsScreen(
             items(state.captures) { CaptureRow(it) }
         }
 
-        val imported = state.expenses.count { it.source == app.tally.data.Source.IMPORT }
-        if (imported > 0) {
+        val untracked = state.expenses.count { it.source == app.tally.data.Source.IMPORT && it.importId == null }
+        if (state.imports.isNotEmpty() || untracked > 0) {
             item {
-                GlassCard(Modifier.pressable(onRemoveImported)) {
-                    Text("Remove imported transactions ($imported)", style = MaterialTheme.typography.titleMedium, color = Tally.Orange)
+                GlassCard {
+                    SectionLabel("Imports")
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        "Undo statement imports, e.g. to redo one that went wrong. Taps, manual entries and plans stay.",
+                        "Remove an import that went wrong. Only its transactions go; taps, manual entries and plans stay. " +
+                            "If it set your balance, the previous balance comes back.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Tally.Muted,
                     )
+                    state.imports.sortedByDescending { it.importedAt }.forEach { b ->
+                        val count = state.expenses.count { it.importId == b.id }
+                        ImportBatchRow(
+                            title = b.fileName,
+                            detail = "$count transactions · " +
+                                "${fmtDay(b.firstEpochDay)} – ${fmtDay(b.lastEpochDay)} · imported ${fmt(b.importedAt, "d MMM, HH:mm")}" +
+                                if (b.setBalanceAt != null) " · set balance" else "",
+                        ) { confirmRemove = b to b.fileName }
+                    }
+                    if (untracked > 0) {
+                        ImportBatchRow(title = "Earlier imports", detail = "$untracked transactions") {
+                            confirmRemove = null to "earlier imports"
+                        }
+                    }
                 }
             }
         }
@@ -281,6 +298,21 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+
+    confirmRemove?.let { (batch, label) ->
+        AlertDialog(
+            onDismissRequest = { confirmRemove = null },
+            containerColor = Tally.SurfaceHi,
+            title = { Text("Remove $label?") },
+            text = { Text("Its transactions are deleted from Tally. You can import the file again later.", color = Tally.Muted) },
+            confirmButton = {
+                TextButton(onClick = { confirmRemove = null; onRemoveImport(batch) }) { Text("Remove", color = Tally.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRemove = null }) { Text("Cancel", color = Tally.Muted) }
+            },
+        )
     }
 
     if (confirmErase) {
@@ -353,3 +385,20 @@ private fun CaptureRow(c: Capture) {
 
 private fun fmt(millis: Long, pattern: String): String =
     Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern(pattern))
+
+@Composable
+private fun ImportBatchRow(title: String, detail: String, onRemove: () -> Unit) {
+    Spacer(Modifier.height(12.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("📄", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(detail, style = MaterialTheme.typography.labelSmall, color = Tally.Muted)
+        }
+        TextButton(onClick = onRemove) { Text("Remove", color = Tally.Red) }
+    }
+}
+
+private fun fmtDay(epochDay: Long): String =
+    java.time.LocalDate.ofEpochDay(epochDay).format(DateTimeFormatter.ofPattern("d MMM yy"))

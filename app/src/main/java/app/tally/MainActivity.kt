@@ -113,6 +113,7 @@ private fun TallyRoot() {
     var importRows by remember { mutableStateOf<List<ImportRow>>(emptyList()) }
     var statementBalance by remember { mutableStateOf<Pair<java.time.LocalDate, Double>?>(null) }
     var updateBalance by remember { mutableStateOf(true) }
+    var importFileName by remember { mutableStateOf("Statement") }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -143,14 +144,16 @@ private fun TallyRoot() {
         scope.launch {
             val result = runCatching {
                 withContext(Dispatchers.Default) {
-                    val lines = StatementReader.read(context, uri)
-                    lines to ExpenseStore.findDuplicates(lines)
+                    val file = StatementReader.read(context, uri)
+                    file to ExpenseStore.findDuplicates(file.lines)
                 }
             }.getOrElse {
                 toast("Couldn't read that file (${it.javaClass.simpleName})")
                 return@launch
             }
-            val (lines, dupes) = result
+            val (file, dupes) = result
+            val lines = file.lines
+            importFileName = file.name
             importRows = lines.mapIndexed { i, l -> ImportRow(l, dupes[i], selected = dupes[i] == null) }
             statementBalance = lines.lastOrNull { it.balanceAfter != null }?.let { it.date to it.balanceAfter!! }
             updateBalance = statementBalance != null
@@ -197,10 +200,9 @@ private fun TallyRoot() {
                     onOpenAppInfo = { WalletListenerService.openAppInfo(context) },
                     onSetBalance = { sheet = Sheet.Balance },
                     onSetBudget = { sheet = Sheet.Budget },
-                    onRemoveImported = {
-                        val n = state.expenses.count { it.source == Source.IMPORT }
-                        ExpenseStore.removeImported()
-                        toast("Removed $n imported transactions")
+                    onRemoveImport = { batch ->
+                        if (batch == null) ExpenseStore.removeUntrackedImports() else ExpenseStore.removeImport(batch.id)
+                        toast("Import removed")
                     },
                     onImport = { pickStatement.launch(arrayOf("application/pdf", "text/*", "application/vnd.ms-excel", "application/octet-stream")) },
                     onCurrency = { ExpenseStore.setCurrency(it) },
@@ -225,15 +227,22 @@ private fun TallyRoot() {
                     },
                     onImport = {
                         val chosen = importRows.filter { it.selected }.map { it.line }
-                        ExpenseStore.import(chosen)
-                        val sb = statementBalance
-                        if (updateBalance && sb != null) {
-                            val endOfDay = sb.first.atTime(23, 59, 59).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
-                            ExpenseStore.setBalance(sb.second, endOfDay)
+                        val sb = statementBalance?.takeIf { updateBalance }
+                        val balance = sb?.let {
+                            it.second to it.first.atTime(23, 59, 59).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
                         }
+                        val batchId = ExpenseStore.import(chosen, importFileName, balance)
                         importRows = emptyList()
                         go(Screen.Activity)
-                        toast("Imported ${chosen.size} transactions")
+                        scope.launch {
+                            snackbar.currentSnackbarData?.dismiss()
+                            val r = snackbar.showSnackbar(
+                                "Imported ${chosen.size} transactions",
+                                actionLabel = "Undo",
+                                duration = androidx.compose.material3.SnackbarDuration.Long,
+                            )
+                            if (r == SnackbarResult.ActionPerformed) ExpenseStore.removeImport(batchId)
+                        }
                     },
                 )
             }

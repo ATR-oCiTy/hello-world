@@ -108,7 +108,23 @@ object ExpenseStore {
         }
     }
 
-    fun import(lines: List<StatementLine>) = mutate { s ->
+    /**
+     * Adds [lines] as one batch and returns its id. [balance] (amount, as-of millis) optionally
+     * sets the balance from the statement too.
+     */
+    fun import(lines: List<StatementLine>, fileName: String, balance: Pair<Double, Long>? = null): String {
+        val batchId = newId()
+        mutate { s -> importInto(s, lines, batchId, fileName, balance) }
+        return batchId
+    }
+
+    private fun importInto(
+        s: AppState,
+        lines: List<StatementLine>,
+        batchId: String,
+        fileName: String,
+        balance: Pair<Double, Long>?,
+    ): AppState {
         val zone = ZoneId.systemDefault()
         val added = lines.mapIndexed { i, l ->
             val name = l.merchant ?: StatementParser.merchantFrom(l.description)
@@ -131,13 +147,52 @@ object ExpenseStore {
                 note = note,
                 card = l.card,
                 income = l.income,
+                importId = batchId,
             )
         }
-        s.copy(expenses = (s.expenses + added).sortedByDescending { it.timestamp })
+        val batch = ImportBatch(
+            id = batchId,
+            importedAt = System.currentTimeMillis(),
+            fileName = fileName,
+            count = added.size,
+            firstEpochDay = lines.minOfOrNull { it.date.toEpochDay() } ?: 0L,
+            lastEpochDay = lines.maxOfOrNull { it.date.toEpochDay() } ?: 0L,
+            setBalanceAt = balance?.second,
+            previousBalance = s.balance,
+            previousBalanceSetAt = s.balanceSetAt,
+        )
+        return s.copy(
+            expenses = (s.expenses + added).sortedByDescending { it.timestamp },
+            imports = s.imports + batch,
+            balance = balance?.first ?: s.balance,
+            balanceSetAt = balance?.second ?: s.balanceSetAt,
+        )
     }
 
-    /** Removes everything that came from statement imports, e.g. to redo a bad one. */
-    fun removeImported() = mutate { s -> s.copy(expenses = s.expenses.filterNot { it.source == Source.IMPORT }) }
+    /**
+     * Undoes one import: its transactions go, and if it set the balance (and you haven't set it
+     * again since), the previous balance comes back.
+     */
+    fun removeImport(batchId: String) = mutate { s ->
+        val batch = s.imports.firstOrNull { it.id == batchId }
+        val restore = batch?.setBalanceAt != null && s.balanceSetAt == batch.setBalanceAt
+        s.copy(
+            expenses = s.expenses.filterNot { it.importId == batchId },
+            imports = s.imports.filterNot { it.id == batchId },
+            balance = if (restore) batch!!.previousBalance else s.balance,
+            balanceSetAt = if (restore) batch!!.previousBalanceSetAt else s.balanceSetAt,
+        )
+    }
+
+    /** Imports from before batches were tracked; they can only be removed together. */
+    fun removeUntrackedImports() = mutate { s ->
+        s.copy(expenses = s.expenses.filterNot { it.source == Source.IMPORT && it.importId == null })
+    }
+
+    /** Removes everything that came from statement imports. */
+    fun removeImported() = mutate { s ->
+        s.copy(expenses = s.expenses.filterNot { it.source == Source.IMPORT }, imports = emptyList())
+    }
 
     private fun Expense.timestampDate(zone: ZoneId): LocalDate =
         java.time.Instant.ofEpochMilli(timestamp).atZone(zone).toLocalDate()
@@ -255,6 +310,21 @@ object ExpenseStore {
         put("balanceSetAt", s.balanceSetAt)
         put("currency", s.currency)
         s.monthlyBudget?.let { put("monthlyBudget", it) }
+        put("imports", JSONArray().apply {
+            s.imports.forEach { b ->
+                put(JSONObject().apply {
+                    put("id", b.id)
+                    put("importedAt", b.importedAt)
+                    put("fileName", b.fileName)
+                    put("count", b.count)
+                    put("first", b.firstEpochDay)
+                    put("last", b.lastEpochDay)
+                    b.setBalanceAt?.let { put("setBalanceAt", it) }
+                    b.previousBalance?.let { put("previousBalance", it) }
+                    put("previousBalanceSetAt", b.previousBalanceSetAt)
+                })
+            }
+        })
         put("recurring", JSONArray().apply {
             s.recurring.forEach { r ->
                 put(JSONObject().apply {
@@ -286,6 +356,7 @@ object ExpenseStore {
                     put("userTagged", e.userTagged)
                     put("income", e.income)
                     e.recurringId?.let { put("recurringId", it) }
+                    e.importId?.let { put("importId", it) }
                 })
             }
         })
@@ -322,6 +393,7 @@ object ExpenseStore {
                 userTagged = e.optBoolean("userTagged"),
                 income = e.optBoolean("income"),
                 recurringId = if (e.has("recurringId")) e.getString("recurringId") else null,
+                importId = if (e.has("importId")) e.getString("importId") else null,
             )
         }
         val captures = o.optJSONArray("captures").objects().map { c ->
@@ -364,6 +436,19 @@ object ExpenseStore {
             currency = o.optString("currency", "€"),
             recurring = recurring,
             monthlyBudget = if (o.has("monthlyBudget")) o.getDouble("monthlyBudget") else null,
+            imports = o.optJSONArray("imports").objects().map { b ->
+                ImportBatch(
+                    id = b.getString("id"),
+                    importedAt = b.getLong("importedAt"),
+                    fileName = b.optString("fileName", "Statement"),
+                    count = b.optInt("count"),
+                    firstEpochDay = b.optLong("first"),
+                    lastEpochDay = b.optLong("last"),
+                    setBalanceAt = if (b.has("setBalanceAt")) b.getLong("setBalanceAt") else null,
+                    previousBalance = if (b.has("previousBalance")) b.getDouble("previousBalance") else null,
+                    previousBalanceSetAt = b.optLong("previousBalanceSetAt"),
+                )
+            },
             captures = captures,
             learned = learned,
         )

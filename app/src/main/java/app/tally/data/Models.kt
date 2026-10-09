@@ -32,6 +32,8 @@ data class Expense(
     val income: Boolean = false,
     /** Set when this was posted automatically by a [Recurring] item. */
     val recurringId: String? = null,
+    /** The [ImportBatch] this came from, so a bad import can be removed on its own. */
+    val importId: String? = null,
 ) {
     /** Effect on your balance: negative for spending, positive for income. */
     val signed: Double get() = if (income) amount else -amount
@@ -61,6 +63,20 @@ data class Recurring(
     val monthlyAmount: Double get() = if (frequency == Frequency.YEARLY) amount / 12 else amount
 }
 
+/** One statement import, kept so it can be undone as a unit. */
+data class ImportBatch(
+    val id: String,
+    val importedAt: Long,
+    val fileName: String,
+    val count: Int,
+    val firstEpochDay: Long,
+    val lastEpochDay: Long,
+    /** Set when this import also set the balance; lets removal put the old balance back. */
+    val setBalanceAt: Long? = null,
+    val previousBalance: Double? = null,
+    val previousBalanceSetAt: Long = 0L,
+)
+
 /** A raw notification seen from a Wallet package, kept so parsing can be checked on-device. */
 data class Capture(
     val time: Long,
@@ -84,6 +100,7 @@ data class AppState(
     val recurring: List<Recurring> = emptyList(),
     /** Everything you allow yourself to spend in a month, fixed costs included. */
     val monthlyBudget: Double? = null,
+    val imports: List<ImportBatch> = emptyList(),
 ) {
     val currentBalance: Double?
         get() = balance?.let { b -> b + expenses.filter { it.timestamp > balanceSetAt }.sumOf { it.signed } }
