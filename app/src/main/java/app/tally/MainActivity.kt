@@ -161,7 +161,9 @@ private fun TallyRoot() {
             val snapshot = state
             val today = java.time.LocalDate.now()
             val exact = withContext(Dispatchers.Default) { AskEngine.answer(question, snapshot, today) }
-            if (modelInstalled && useModel) {
+            // Exact answers always win: a 1B model can't be trusted with numbers. Gemma only
+            // handles questions Tally's own engine didn't understand.
+            if (modelInstalled && useModel && !exact.understood) {
                 chat = chat + ChatMessage(fromUser = false, text = "", thinking = true)
                 val reply = runCatching {
                     val summary = withContext(Dispatchers.Default) { AskEngine.summary(snapshot, today) }
@@ -169,14 +171,18 @@ private fun TallyRoot() {
                 }
                 chat = chat.dropLast(1) + reply.fold(
                     onSuccess = { text ->
-                        ChatMessage(false, text, source = "Gemma, from your data", figures = exact.text.takeIf { exact.understood })
+                        ChatMessage(false, text, source = "Gemma · AI-written, can be wrong")
                     },
                     onFailure = { e ->
                         ChatMessage(false, exact.text, source = "Exact · Gemma couldn't run (${e.javaClass.simpleName})")
                     },
                 )
             } else {
-                chat = chat + ChatMessage(false, exact.text, source = if (exact.understood) "Exact, from your data" else "")
+                chat = chat + ChatMessage(
+                    false, exact.text,
+                    source = if (exact.understood) "Exact, from your data" else "",
+                    change = exact.change,
+                )
             }
             asking = false
         }
@@ -260,6 +266,28 @@ private fun TallyRoot() {
                     onToggleModel = { useModel = !useModel },
                     onSettings = { go(Screen.Settings) },
                     onSend = { ask(it) },
+                    onApply = { msg ->
+                        val c = msg.change ?: return@AskScreen
+                        val plan = state.recurring.firstOrNull { it.id == c.planId }
+                        if (plan != null) {
+                            ExpenseStore.saveRecurring(
+                                plan.copy(changes = plan.changes.filterNot { it.fromEpochDay == c.fromEpochDay } +
+                                    app.tally.data.AmountChange(c.fromEpochDay, c.amount)),
+                            )
+                        } else {
+                            val today = java.time.LocalDate.now()
+                            ExpenseStore.saveRecurring(
+                                app.tally.data.Recurring(
+                                    id = ExpenseStore.newId(), name = "Salary", amount = c.amount, income = true,
+                                    category = app.tally.data.Category.INCOME, frequency = app.tally.data.Frequency.MONTHLY,
+                                    day = 28, startEpochDay = maxOf(today.toEpochDay(), c.fromEpochDay),
+                                    postedThroughEpochDay = today.toEpochDay(),
+                                ),
+                            )
+                        }
+                        chat = chat.map { if (it === msg) it.copy(applied = true) else it }
+                        toast("Updated ${c.planName}")
+                    },
                 )
                 Screen.Settings -> SettingsScreen(
                     state = state,

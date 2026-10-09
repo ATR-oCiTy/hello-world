@@ -62,6 +62,9 @@ data class ChatMessage(
     /** The exact computed figures, shown under a model-written answer so you can check it. */
     val figures: String? = null,
     val thinking: Boolean = false,
+    /** A plan change this answer suggests, offered as a button. */
+    val change: app.tally.logic.SuggestedChange? = null,
+    val applied: Boolean = false,
 )
 
 private val suggestions = listOf(
@@ -85,6 +88,7 @@ fun AskScreen(
     onToggleModel: () -> Unit,
     onSettings: () -> Unit,
     onSend: (String) -> Unit,
+    onApply: (ChatMessage) -> Unit,
 ) {
     var input by remember { mutableStateOf("") }
     val list = rememberLazyListState()
@@ -124,7 +128,7 @@ fun AskScreen(
                     }
                 }
             }
-            items(messages) { Bubble(it) }
+            items(messages) { Bubble(it) { onApply(it) } }
         }
 
         if (messages.isNotEmpty()) {
@@ -181,7 +185,7 @@ private fun ModeCard(modelInstalled: Boolean, useModel: Boolean, onToggle: () ->
 }
 
 @Composable
-private fun Bubble(m: ChatMessage) {
+private fun Bubble(m: ChatMessage, onApply: () -> Unit) {
     val shape = RoundedCornerShape(
         topStart = 20.dp, topEnd = 20.dp,
         bottomStart = if (m.fromUser) 20.dp else 6.dp,
@@ -205,6 +209,14 @@ private fun Bubble(m: ChatMessage) {
                 m.figures?.let {
                     Spacer(Modifier.height(8.dp))
                     Text("Figures: $it", style = MaterialTheme.typography.labelSmall, color = Tally.Muted)
+                }
+                m.change?.let { c ->
+                    Spacer(Modifier.height(10.dp))
+                    Chip(
+                        if (m.applied) "✓ Added to ${c.planName}" else "Apply to ${c.planName} plan",
+                        selected = m.applied,
+                        accent = Tally.Mint,
+                    ) { if (!m.applied) onApply() }
                 }
                 if (m.source.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))

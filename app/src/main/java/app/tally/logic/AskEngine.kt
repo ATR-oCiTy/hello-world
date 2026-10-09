@@ -16,7 +16,7 @@ import java.time.temporal.TemporalAdjusters
 import java.util.Locale
 
 /** What the question resolved to, kept so a language model can be handed the same facts. */
-data class Answer(val text: String, val understood: Boolean)
+data class Answer(val text: String, val understood: Boolean, val change: SuggestedChange? = null)
 
 /**
  * Answers questions about your money from the data itself, exactly and instantly.
@@ -69,6 +69,14 @@ object AskEngine {
     private fun raw(question: String, state: AppState, today: LocalDate, zone: ZoneId): Answer {
         val q = " ${question.lowercase().replace(Regex("""[?!.,]"""), " ")} "
         val cur = state.currency
+        if (Regex("""^\s*(hi|hello|hey|hallo|servus|moin|yo|thanks|thank you|danke|ok|okay)\b[\s!]*$""").containsMatchIn(question.lowercase())) {
+            return Answer(
+                "Hi! Ask me about your money, for example \"How much on food last month?\", \"When does my money run out?\" " +
+                    "or a what-if like \"My salary goes up to 1700 gross from mid November\".",
+                true,
+            )
+        }
+        if (WhatIf.isWhatIf(question)) return WhatIf.salary(question, state, today, zone)
         fun m(x: Double) = "$cur${nf.format(x)}"
         fun has(vararg words: String) = words.any { q.contains(it) }
 
@@ -129,7 +137,12 @@ object AskEngine {
         val incomeAsked = category == Category.INCOME || has(" earn", "income", "salary", "got paid", "received", "came in")
 
         if (incomeAsked) {
+            // "My salary" / "my job" means the payer of your salary plan, not every transfer in.
+            val jobKeys = if (has("salary", "job", "work", "werkstudent", "wage", "gehalt", "lohn")) {
+                state.recurring.filter { it.income }.flatMap { it.matchKeys() + RecurringDetector.seriesKey(it.name) }.toSet()
+            } else emptySet()
             val income = dated.filter { (e, d) -> e.income && d in range.from..range.to }.map { it.first }
+                .filter { e -> jobKeys.isEmpty() || RecurringDetector.seriesKey(e.merchant) in jobKeys || e.recurringId != null }
             if (income.isEmpty()) return Answer("No income recorded ${range.label}.", true)
             val top = income.groupBy { it.merchant }.mapValues { (_, v) -> v.sumOf { it.amount } }.entries.sortedByDescending { it.value }
             return Answer(

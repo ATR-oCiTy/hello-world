@@ -72,8 +72,17 @@ object LocalLlm {
     ).also { engine = it }
 
     suspend fun generate(context: Context, prompt: String): String = withContext(Dispatchers.Default) {
-        load(context).generateResponse(prompt).trim()
+        clean(load(context).generateResponse(prompt))
     }
+
+    /** Small models sometimes emit escaped newlines or chat markers; tidy those up. */
+    internal fun clean(raw: String): String = raw
+        .replace("\\n", "\n")
+        .replace("<end_of_turn>", "")
+        .replace("<start_of_turn>model", "")
+        .replace(Regex("\n{3,}"), "\n\n")
+        .trim()
+        .let { if (it.length > 700) it.take(700).substringBeforeLast(' ') + "…" else it }
 
     /**
      * Gemma chat format. The model gets the exact figures Tally computed plus a summary of your
@@ -82,9 +91,10 @@ object LocalLlm {
     fun prompt(summary: String, computed: Answer, question: String): String = buildString {
         append("<start_of_turn>user\n")
         append("You are Tally, a friendly, concise personal-finance assistant inside a budgeting app. ")
-        append("Answer the question using ONLY the facts below. Never invent or recalculate numbers; ")
-        append("copy figures exactly as written. If the facts don't contain the answer, say so briefly. ")
-        append("Reply in at most 3 short sentences.\n\n")
+        append("Answer the question using ONLY the facts below. Never invent, estimate or calculate numbers: ")
+        append("only quote figures that appear in the facts, exactly as written. If the facts don't answer the ")
+        append("question, say you can't tell from the data and suggest a question the app can answer. ")
+        append("Plain text, no markdown, at most 3 short sentences.\n\n")
         append("FACTS:\n").append(summary).append("\n")
         if (computed.understood) append("Exact answer computed by the app: ").append(computed.text).append("\n")
         append("\nQUESTION: ").append(question)
