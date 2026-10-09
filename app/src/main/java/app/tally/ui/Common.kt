@@ -12,6 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -150,4 +154,66 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
 @Composable
 fun Dot(color: Color, size: Dp = 8.dp) {
     Box(Modifier.size(size).clip(RoundedCornerShape(50)).background(color))
+}
+
+@Composable
+fun ScreenHeader(subtitle: String, title: String, onSettings: () -> Unit) {
+    androidx.compose.foundation.layout.Row(
+        Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(top = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = Tally.Muted)
+            Text(title, style = MaterialTheme.typography.headlineMedium)
+        }
+        Box(
+            Modifier
+                .size(46.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Tally.Surface)
+                .border(1.dp, Tally.Stroke, RoundedCornerShape(16.dp))
+                .pressable(onSettings),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Tally.Text)
+        }
+    }
+}
+
+/** Two-option pill switch, e.g. Expense / Income. */
+@Composable
+fun SegmentedToggle(
+    options: List<String>,
+    selected: Int,
+    modifier: Modifier = Modifier,
+    accents: List<Color> = options.map { Tally.Pink },
+    onSelect: (Int) -> Unit,
+) {
+    val shape = RoundedCornerShape(18.dp)
+    androidx.compose.foundation.layout.Row(
+        modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Tally.SurfaceHi)
+            .border(1.dp, Tally.Stroke, shape)
+            .padding(4.dp),
+    ) {
+        options.forEachIndexed { i, label ->
+            val on = i == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (on) accents[i].copy(alpha = 0.22f) else Color.Transparent)
+                    .pressable { onSelect(i) }
+                    .padding(vertical = 11.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, style = MaterialTheme.typography.labelLarge, color = if (on) Color.White else Tally.Muted)
+            }
+        }
+    }
 }

@@ -20,6 +20,16 @@ from your balance.
   place: future taps there are filed the same way, older untagged payments from it are re-filed, and
   other branches of the same brand follow. The newest tag wins straight away, so it adapts if you
   change your mind. You can see and forget what it learned under Settings → Learned places.
+- **Plans (recurring)**: salary, Deutschlandticket, insurance, subscriptions… monthly or yearly on a
+  given day (31 → last day of short months). Tally posts each one itself on its due day, including
+  any it missed while the app was closed, and counts them in your balance, budget and forecast.
+- **Insights**: monthly budget with safe-to-spend, a per-day allowance, pace vs budget and
+  projected month-end; in / out / net; 6-month trend; categories vs last month; and **runway**:
+  how many months your balance lasts and the date it runs out. Runway walks forward day by day
+  using your usual daily spending (last 60 days, plans excluded) plus every plan on its due day.
+- **Statement import**: Settings → Import bank statement → pick the PDF or CSV from the Expatrio
+  app. Every row is shown for review first; anything already logged (same amount, within 3 days)
+  starts unticked.
 - **Manual expenses**: tap **+**. Tap any row to edit it; swipe left to delete it (you get an Undo).
 - **Captured notifications** (Settings): the last 40 Wallet notifications and what Tally made of
   them. If a tap didn't show up, look here first.
@@ -56,4 +66,7 @@ You need JDK 17 and the Android SDK (API 35).
 | `parser/Classifier.kt` | Learns merchant → category from your tagging |
 | `service/WalletListenerService.kt` | Notification listener, Wallet packages only |
 | `data/ExpenseStore.kt` | State and JSON persistence; skips duplicate notifications |
-| `ui/` | Home, add/edit sheet, settings, theme |
+| `logic/Recurrence.kt` | When plans fall due |
+| `logic/Metrics.kt` | Budget, pace, projections, runway |
+| `logic/StatementParser.kt` | Bank statement text / CSV → transactions |
+| `ui/` | Activity, Insights, Plans, import review, sheets, settings, theme |

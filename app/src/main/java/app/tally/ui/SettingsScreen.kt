@@ -44,7 +44,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private val currencies = listOf("₹", "$", "€", "£", "¥", "A$", "C$")
+private val currencies = listOf("€", "$", "£", "₹", "CHF", "zł", "kr")
 
 @Composable
 fun SettingsScreen(
@@ -54,6 +54,8 @@ fun SettingsScreen(
     onOpenAccess: () -> Unit,
     onOpenAppInfo: () -> Unit,
     onSetBalance: () -> Unit,
+    onSetBudget: () -> Unit,
+    onImport: () -> Unit,
     onCurrency: (String) -> Unit,
     onForget: (String) -> Unit,
     onErase: () -> Unit,
@@ -152,6 +154,39 @@ fun SettingsScreen(
         }
 
         item {
+            GlassCard(Modifier.pressable(onSetBudget)) {
+                SectionLabel("Monthly budget")
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        state.monthlyBudget?.let { money(it, state.currency) } ?: "Not set",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(if (state.monthlyBudget == null) "Set →" else "Edit →", style = MaterialTheme.typography.labelLarge, color = Tally.Pink)
+                }
+            }
+        }
+
+        item {
+            GlassCard(Modifier.pressable(onImport)) {
+                SectionLabel("Import bank statement")
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Pick a PDF or CSV", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    Text("Choose →", style = MaterialTheme.typography.labelLarge, color = Tally.Pink)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Download your statement from the Expatrio app and pick it here. You review every row before " +
+                        "anything is added, and ones Tally already has are skipped.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Tally.Muted,
+                )
+            }
+        }
+
+        item {
             GlassCard {
                 SectionLabel("Currency symbol")
                 Spacer(Modifier.height(12.dp))
@@ -225,7 +260,7 @@ fun SettingsScreen(
             GlassCard(Modifier.pressable { confirmErase = true }) {
                 Text("Erase all data", style = MaterialTheme.typography.titleMedium, color = Tally.Red)
                 Text(
-                    "Deletes every expense, your balance, learned places and the capture log.",
+                    "Deletes every transaction, plan, your balance and budget, learned places and the capture log.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Tally.Muted,
                 )

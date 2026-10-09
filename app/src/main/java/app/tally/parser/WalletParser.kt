@@ -100,18 +100,24 @@ object WalletParser {
     }
 
     private val categoryKeywords: List<Pair<Category, List<String>>> = listOf(
+        Category.SUBSCRIPTIONS to listOf(
+            "claude", "anthropic", "hack the box", "hackthebox", "chatgpt", "openai", "netflix",
+            "spotify", "youtube", "disney", "prime video", "apple.com", "icloud", "google one",
+            "adobe", "github", "notion", "dazn", "audible", "patreon", "subscription", "abo ",
+        ),
+        Category.INCOME to listOf("gehalt", "salary", "lohn", "payroll", "stipend"),
         Category.FOOD to listOf(
             "cafe", "café", "coffee", "starbucks", "costa", "pret", "mcdonald", "kfc", "burger",
             "pizza", "domino", "subway", "restaurant", " bar ", " pub ", "kitchen", "grill", "bistro",
-            "swiggy", "zomato", "deliveroo", "uber eats", "doordash", "bakery", "chai", "dosa", "taco",
+            "swiggy", "zomato", "lieferando", "wolt", "döner", "backerei", "bäckerei", "deliveroo", "uber eats", "doordash", "bakery", "chai", "dosa", "taco",
         ),
         Category.GROCERIES to listOf(
             "tesco", "sainsbury", "asda", "aldi", "lidl", "waitrose", "walmart", "costco", "kroger",
-            "whole foods", "trader joe", "dmart", "bigbasket", "blinkit", "zepto", "instamart",
+            "whole foods", "trader joe", "rewe", "edeka", "netto", "penny", "kaufland", "dm-drogerie", "rossmann", "dmart", "bigbasket", "blinkit", "zepto", "instamart",
             "reliance fresh", " more ", "spar", "co-op", "market", "grocer", "supermarket",
         ),
         Category.TRANSPORT to listOf(
-            "uber", " ola ", "lyft", "bolt", "rapido", "metro", "rail", "train", "tfl", "transit",
+            "deutschlandticket", "d-ticket", "bahn", " db ", "bvg", "mvg", "hvv", "vbb", "rmv", "kvb", "flixbus", "uber", " ola ", "lyft", "bolt", "rapido", "metro", "rail", "train", "tfl", "transit",
             " bus ", "taxi", "cab", "fuel", "petrol", "shell", " bp ", "hpcl", "iocl", "indian oil",
             "parking", "toll", "airline", "airways",
         ),
@@ -120,15 +126,15 @@ object WalletParser {
             "apple", "store", "mall", "boutique", "decathlon", "primark", "target", "best buy",
         ),
         Category.FUN to listOf(
-            "cinema", "pvr", "inox", "netflix", "spotify", "steam", "playstation", "xbox",
+            "cinema", "kino", "pvr", "inox", "steam", "playstation", "xbox",
             "bookmyshow", "ticket", "club", "bowling", "arcade", "theatre", "theater", "concert",
         ),
         Category.BILLS to listOf(
-            "electric", "power", "water", "gas", "airtel", "jio", "vodafone", " vi ", "broadband",
+            "techniker", " tk ", "aok", "barmer", "versicherung", "rundfunk", "telekom", " o2 ", "stadtwerke", "electric", "power", "water", "gas", "airtel", "jio", "vodafone", " vi ", "broadband",
             "internet", "insurance", " rent ", "bill", "recharge", "mobile",
         ),
         Category.HEALTH to listOf(
-            "pharma", "chemist", "apollo", "boots", "cvs", "walgreens", "clinic", "hospital",
+            "apotheke", "arzt", "pharma", "chemist", "apollo", "boots", "cvs", "walgreens", "clinic", "hospital",
             "dental", "medical", "gym", "fitness", " cult", "medplus", "1mg",
         ),
     )

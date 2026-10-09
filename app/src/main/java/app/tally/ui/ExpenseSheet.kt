@@ -46,8 +46,12 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.tally.data.AppState
 import app.tally.data.Category
 import app.tally.data.Expense
+import app.tally.data.Frequency
+import app.tally.data.Recurring
+import app.tally.logic.Recurrence
 import app.tally.data.Source
 import app.tally.parser.Classifier
 import app.tally.parser.Learned
@@ -63,7 +67,19 @@ sealed interface Sheet {
     data object NewExpense : Sheet
     data class EditExpense(val expense: Expense) : Sheet
     data object Balance : Sheet
+    data object Budget : Sheet
+    data object NewRecurring : Sheet
+    data class EditRecurring(val recurring: Recurring) : Sheet
 }
+
+class SheetActions(
+    val onSave: (expense: Expense, taught: Boolean) -> Unit,
+    val onDelete: (Expense) -> Unit,
+    val onSetBalance: (Double) -> Unit,
+    val onSetBudget: (Double?) -> Unit,
+    val onSaveRecurring: (Recurring) -> Unit,
+    val onDeleteRecurring: (Recurring) -> Unit,
+)
 
 private val amountPattern = Regex("""^\d{0,9}([.,]\d{0,2})?$""")
 private fun String.toAmount(): Double? = replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 }
@@ -73,14 +89,12 @@ private fun Double.toInput(): String = if (this % 1.0 == 0.0) toLong().toString(
 @Composable
 fun TallySheet(
     sheet: Sheet,
-    currency: String,
-    currentBalance: Double?,
-    learned: Learned,
+    state: AppState,
     onDismiss: () -> Unit,
-    onSave: (expense: Expense, taught: Boolean) -> Unit,
-    onDelete: (Expense) -> Unit,
-    onSetBalance: (Double) -> Unit,
+    actions: SheetActions,
 ) {
+    val currency = state.currency
+    val learned = state.learned
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -98,9 +112,27 @@ fun TallySheet(
         },
     ) {
         when (sheet) {
-            Sheet.Balance -> BalanceForm(currency, currentBalance, onSetBalance)
-            Sheet.NewExpense -> ExpenseForm(null, currency, learned, onSave, onDelete)
-            is Sheet.EditExpense -> ExpenseForm(sheet.expense, currency, learned, onSave, onDelete)
+            Sheet.Balance -> AmountForm(
+                title = "Set balance",
+                description = "Enter what's in your account right now. Everything after this moment adjusts it.",
+                currency = currency,
+                initial = state.currentBalance,
+                button = "Save balance",
+                onSave = actions.onSetBalance,
+            )
+            Sheet.Budget -> AmountForm(
+                title = "Monthly budget",
+                description = "Everything you allow yourself in a month, rent, insurance and subscriptions included.",
+                currency = currency,
+                initial = state.monthlyBudget,
+                button = "Save budget",
+                onSave = actions.onSetBudget,
+                onRemove = if (state.monthlyBudget != null) ({ actions.onSetBudget(null) }) else null,
+            )
+            Sheet.NewExpense -> ExpenseForm(null, currency, learned, actions.onSave, actions.onDelete)
+            is Sheet.EditExpense -> ExpenseForm(sheet.expense, currency, learned, actions.onSave, actions.onDelete)
+            Sheet.NewRecurring -> RecurringForm(null, currency, learned, actions.onSaveRecurring, actions.onDeleteRecurring)
+            is Sheet.EditRecurring -> RecurringForm(sheet.recurring, currency, learned, actions.onSaveRecurring, actions.onDeleteRecurring)
         }
     }
 }
@@ -180,21 +212,31 @@ private fun SheetColumn(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun BalanceForm(currency: String, current: Double?, onSet: (Double) -> Unit) {
-    var text by remember { mutableStateOf(current?.takeIf { it > 0 }?.toInput().orEmpty()) }
+private fun AmountForm(
+    title: String,
+    description: String,
+    currency: String,
+    initial: Double?,
+    button: String,
+    onSave: (Double) -> Unit,
+    onRemove: (() -> Unit)? = null,
+) {
+    var text by remember { mutableStateOf(initial?.takeIf { it > 0 }?.toInput().orEmpty()) }
     SheetColumn {
-        Text("Set balance", style = MaterialTheme.typography.headlineMedium)
+        Text(title, style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(4.dp))
-        Text(
-            "Enter what's in your account right now. Every payment after this gets subtracted.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = Tally.Muted,
-        )
+        Text(description, style = MaterialTheme.typography.bodyMedium, color = Tally.Muted)
         Spacer(Modifier.height(24.dp))
         AmountField(text, currency) { text = it }
         Spacer(Modifier.height(28.dp))
         val value = text.replace(',', '.').toDoubleOrNull()
-        GradientButton("Save balance", enabled = value != null) { value?.let(onSet) }
+        GradientButton(button, enabled = value != null) { value?.let(onSave) }
+        if (onRemove != null) {
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onRemove, modifier = Modifier.fillMaxWidth()) {
+                Text("Remove", color = Tally.Red, style = MaterialTheme.typography.labelLarge)
+            }
+        }
     }
 }
 
@@ -214,6 +256,7 @@ private fun ExpenseForm(
     var category by remember { mutableStateOf(existing?.category ?: Category.OTHER) }
     // True once you tap a category chip: that's a tag Tally learns from.
     var taught by remember { mutableStateOf(false) }
+    var income by remember { mutableStateOf(existing?.income ?: false) }
     var date by remember { mutableStateOf(existing?.timestamp?.toLocalDate() ?: LocalDate.now()) }
     var picking by remember { mutableStateOf(false) }
 
@@ -222,7 +265,11 @@ private fun ExpenseForm(
     SheetColumn {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (existing == null) "New expense" else "Edit expense",
+                when {
+                    existing != null -> if (income) "Edit income" else "Edit expense"
+                    income -> "New income"
+                    else -> "New expense"
+                },
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.weight(1f),
             )
@@ -230,13 +277,18 @@ private fun ExpenseForm(
                 Text("via Tap & Pay", style = MaterialTheme.typography.labelSmall, color = Tally.Mint)
             }
         }
+        Spacer(Modifier.height(16.dp))
+        SegmentedToggle(listOf("Expense", "Income"), if (income) 1 else 0, accents = listOf(Tally.Pink, Tally.Mint)) {
+            income = it == 1
+            if (!taught) category = if (income) Category.INCOME else Classifier.classify(merchant, learned)
+        }
         Spacer(Modifier.height(20.dp))
         AmountField(amount, currency) { amount = it }
         Spacer(Modifier.height(20.dp))
 
-        InputField(merchant, "Where? (e.g. Starbucks)") {
+        InputField(merchant, if (income) "From? (e.g. ACME GmbH)" else "Where? (e.g. Starbucks)") {
             merchant = it
-            if (!taught && existing == null) category = Classifier.classify(it, learned)
+            if (!taught && existing == null && !income) category = Classifier.classify(it, learned)
         }
         Spacer(Modifier.height(20.dp))
 
@@ -279,7 +331,7 @@ private fun ExpenseForm(
         Spacer(Modifier.height(28.dp))
 
         val value = amount.toAmount()
-        GradientButton(if (existing == null) "Add expense" else "Save changes", enabled = value != null) {
+        GradientButton(if (existing != null) "Save changes" else if (income) "Add income" else "Add expense", enabled = value != null) {
             val ts = when {
                 existing != null && existing.timestamp.toLocalDate() == date -> existing.timestamp
                 date == today -> System.currentTimeMillis()
@@ -298,6 +350,8 @@ private fun ExpenseForm(
                     note = note.trim(),
                     card = existing?.card,
                     userTagged = existing?.userTagged ?: false,
+                    income = income,
+                    recurringId = existing?.recurringId,
                 ),
                 taught && merchant.isNotBlank(),
             )
@@ -329,6 +383,145 @@ private fun ExpenseForm(
             },
         ) {
             DatePicker(state = pickerState)
+        }
+    }
+}
+
+@Composable
+private fun RecurringForm(
+    existing: Recurring?,
+    currency: String,
+    learned: Learned,
+    onSave: (Recurring) -> Unit,
+    onDelete: (Recurring) -> Unit,
+) {
+    val today = LocalDate.now()
+    var income by remember { mutableStateOf(existing?.income ?: false) }
+    var amount by remember { mutableStateOf(existing?.amount?.toInput().orEmpty()) }
+    var name by remember { mutableStateOf(existing?.name.orEmpty()) }
+    var category by remember { mutableStateOf(existing?.category ?: Category.SUBSCRIPTIONS) }
+    var categoryTouched by remember { mutableStateOf(existing != null) }
+    var frequency by remember { mutableStateOf(existing?.frequency ?: Frequency.MONTHLY) }
+    var day by remember { mutableStateOf(existing?.day ?: today.dayOfMonth) }
+    var month by remember { mutableStateOf(existing?.month ?: today.monthValue) }
+    val active = existing?.active ?: true
+    var skipToday by remember { mutableStateOf(false) }
+
+    val start = existing?.startEpochDay ?: (if (skipToday) today.plusDays(1) else today).toEpochDay()
+    val draft = Recurring(
+        id = existing?.id ?: app.tally.data.ExpenseStore.newId(),
+        name = name.trim().ifEmpty { if (income) "Salary" else category.label },
+        amount = amount.toAmount() ?: 0.0,
+        income = income,
+        category = category,
+        frequency = frequency,
+        day = day,
+        month = month,
+        startEpochDay = start,
+        postedThroughEpochDay = existing?.postedThroughEpochDay ?: (today.toEpochDay() - 1),
+        active = active,
+    )
+    val next = Recurrence.nextDue(draft, today)
+
+    SheetColumn {
+        Text(
+            if (existing == null) "New plan" else "Edit plan",
+            style = MaterialTheme.typography.headlineMedium,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Posted automatically on its due day: salary, Deutschlandticket, insurance, subscriptions.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Tally.Muted,
+        )
+        Spacer(Modifier.height(16.dp))
+        SegmentedToggle(listOf("Goes out", "Comes in"), if (income) 1 else 0, accents = listOf(Tally.Pink, Tally.Mint)) {
+            income = it == 1
+            if (!categoryTouched) category = if (income) Category.INCOME else Classifier.classify(name, learned)
+        }
+        Spacer(Modifier.height(20.dp))
+        AmountField(amount, currency) { amount = it }
+        Spacer(Modifier.height(20.dp))
+        InputField(name, if (income) "e.g. Working student salary" else "e.g. Deutschlandticket") {
+            name = it
+            if (!categoryTouched && !income) {
+                category = Classifier.classify(it, learned).let { c -> if (c == Category.OTHER) Category.SUBSCRIPTIONS else c }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        SectionLabel("Category")
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Category.entries.forEach { c ->
+                Chip("${c.emoji} ${c.label}", selected = c == category, accent = c.tint) {
+                    category = c
+                    categoryTouched = true
+                }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        SectionLabel("Repeats")
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Frequency.entries.forEach { f -> Chip(f.label, selected = f == frequency) { frequency = f } }
+        }
+        if (frequency == Frequency.YEARLY) {
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                java.time.Month.values().forEach { m ->
+                    Chip(
+                        m.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault()),
+                        selected = m.value == month,
+                    ) { month = m.value }
+                }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        SectionLabel("On day")
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            (1..31).forEach { d -> Chip(d.toString(), selected = d == day) { day = d } }
+        }
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            when {
+                !active -> "Paused: nothing will be posted."
+                next == null -> ""
+                next == today -> "First one posts today."
+                else -> "Next one posts on ${next.format(DateTimeFormatter.ofPattern("EEE, d MMM yyyy"))}."
+            } + if (day > 28) " Shorter months use their last day." else "",
+            style = MaterialTheme.typography.labelSmall,
+            color = Tally.Violet,
+        )
+        if (existing == null && (next == today || skipToday)) {
+            Spacer(Modifier.height(8.dp))
+            Chip("Already paid today: skip it", selected = skipToday, accent = Tally.Violet) { skipToday = !skipToday }
+        }
+        Spacer(Modifier.height(24.dp))
+
+        GradientButton(if (existing == null) "Add plan" else "Save changes", enabled = amount.toAmount() != null) {
+            onSave(draft)
+        }
+        if (existing != null) {
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth()) {
+                TextButton(onClick = { onSave(draft.copy(active = !active)) }, modifier = Modifier.weight(1f)) {
+                    Text(if (active) "Pause" else "Resume", color = Tally.Muted, style = MaterialTheme.typography.labelLarge)
+                }
+                TextButton(onClick = { onDelete(existing) }, modifier = Modifier.weight(1f)) {
+                    Text("Delete", color = Tally.Red, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            Text(
+                "Pause and Delete keep what's already been posted in your history.",
+                style = MaterialTheme.typography.labelSmall,
+                color = Tally.Faint,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

@@ -70,15 +70,14 @@ fun HomeScreen(
     onConnect: () -> Unit,
     onSettings: () -> Unit,
     onSetBalance: () -> Unit,
+    onBudget: () -> Unit,
     onEdit: (Expense) -> Unit,
     onDelete: (Expense) -> Unit,
 ) {
     val today = LocalDate.now()
     val cur = state.currency
-    val monthTotal = state.expenses
-        .filter { val d = it.timestamp.toLocalDate(); d.year == today.year && d.month == today.month }
-        .sumOf { it.amount }
-    val todayTotal = state.expenses.filter { it.timestamp.toLocalDate() == today }.sumOf { it.amount }
+    val insights = rememberInsights(state)
+    val monthTotal = insights.month.spent
     val byDay = state.expenses.groupBy { it.timestamp.toLocalDate() }
 
     LazyColumn(
@@ -86,17 +85,18 @@ fun HomeScreen(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 140.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { Header(onSettings) }
+        item { ScreenHeader(greeting(), "Your money", onSettings) }
         if (!listenerEnabled) item { ConnectCard(onConnect) }
         item {
             BalanceHero(
                 balance = state.currentBalance,
                 currency = cur,
                 monthTotal = monthTotal,
-                todayTotal = todayTotal,
+                runway = runwayLabel(insights.runway),
                 onClick = onSetBalance,
             )
         }
+        if (state.monthlyBudget != null) item { BudgetStrip(insights, cur, onBudget) }
         item { WeekCard(state, today) }
         if (monthTotal > 0) item { CategoryCard(state, today, monthTotal) }
 
@@ -104,7 +104,7 @@ fun HomeScreen(
             item { EmptyState(listenerEnabled) }
         } else {
             byDay.forEach { (day, items) ->
-                item(key = "h$day") { DayHeader(day, today, items.sumOf { it.amount }, cur) }
+                item(key = "h$day") { DayHeader(day, today, items.filter { !it.income }.sumOf { it.amount }, cur) }
                 items(items, key = { it.id }) { e ->
                     SwipeRow(e, cur, onEdit = { onEdit(e) }, onDelete = { onDelete(e) })
                 }
@@ -113,34 +113,50 @@ fun HomeScreen(
     }
 }
 
+private fun greeting(): String = when (LocalTime.now().hour) {
+    in 5..11 -> "Good morning"
+    in 12..16 -> "Good afternoon"
+    in 17..21 -> "Good evening"
+    else -> "Up late"
+}
+
 @Composable
-private fun Header(onSettings: () -> Unit) {
-    val hour = LocalTime.now().hour
-    val greeting = when (hour) {
-        in 5..11 -> "Good morning"
-        in 12..16 -> "Good afternoon"
-        in 17..21 -> "Good evening"
-        else -> "Up late"
+private fun BudgetStrip(insights: Insights, cur: String, onClick: () -> Unit) {
+    val m = insights.month
+    val budget = m.budget ?: return
+    val frac = (m.spent / budget).toFloat().coerceIn(0f, 1f)
+    val committedFrac = ((m.spent + m.upcomingFixed) / budget).toFloat().coerceIn(0f, 1f)
+    val color = when {
+        m.spent > budget -> Tally.Red
+        m.projectedSpend > budget -> Tally.Orange
+        else -> Tally.Mint
     }
-    Row(
-        Modifier.fillMaxWidth().statusBarsPadding().padding(top = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(greeting, style = MaterialTheme.typography.bodyMedium, color = Tally.Muted)
-            Text("Your money", style = MaterialTheme.typography.headlineMedium)
+    GlassCard(Modifier.pressable(onClick), padding = 18.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                money(m.safeToSpend ?: 0.0, cur, decimals = false),
+                style = MaterialTheme.typography.titleLarge,
+                color = if ((m.safeToSpend ?: 0.0) < 0) Tally.Red else Tally.Text,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("safe to spend", style = MaterialTheme.typography.bodyMedium, color = Tally.Muted, modifier = Modifier.weight(1f))
+            Text(
+                "${money((m.dailyAllowance ?: 0.0).coerceAtLeast(0.0), cur, decimals = false)}/day",
+                style = MaterialTheme.typography.labelLarge,
+                color = color,
+            )
         }
-        Box(
-            Modifier
-                .size(46.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Tally.Surface)
-                .border(1.dp, Tally.Stroke, RoundedCornerShape(16.dp))
-                .pressable(onSettings),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Tally.Text)
+        Spacer(Modifier.height(12.dp))
+        Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(Tally.SurfaceHi)) {
+            Box(Modifier.fillMaxWidth(committedFrac).height(8.dp).clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.3f)))
+            Box(Modifier.fillMaxWidth(frac).height(8.dp).clip(RoundedCornerShape(50)).background(color))
         }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "${money(m.spent, cur, decimals = false)} of ${money(budget, cur, decimals = false)} · ${m.daysLeft} days left",
+            style = MaterialTheme.typography.labelSmall,
+            color = Tally.Muted,
+        )
     }
 }
 
@@ -171,7 +187,7 @@ private fun BalanceHero(
     balance: Double?,
     currency: String,
     monthTotal: Double,
-    todayTotal: Double,
+    runway: String,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(32.dp)
@@ -227,7 +243,7 @@ private fun BalanceHero(
             } else {
                 Text("Set balance", style = MaterialTheme.typography.displayLarge.copy(fontSize = 38.sp), color = Color.White)
                 Text(
-                    "Tap here and enter what's in your account.",
+                    "Tap here and enter what's in your Expatrio account.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.8f),
                 )
@@ -235,7 +251,7 @@ private fun BalanceHero(
             Spacer(Modifier.height(22.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 HeroPill("This month", money(monthTotal, currency), Modifier.weight(1f))
-                HeroPill("Today", money(todayTotal, currency), Modifier.weight(1f))
+                HeroPill("Money lasts", runway, Modifier.weight(1f))
             }
         }
     }
@@ -265,7 +281,7 @@ private fun HeroPill(label: String, value: String, modifier: Modifier) {
 @Composable
 private fun WeekCard(state: AppState, today: LocalDate) {
     val days = (6 downTo 0).map { today.minusDays(it.toLong()) }
-    val totals = days.map { d -> state.expenses.filter { it.timestamp.toLocalDate() == d }.sumOf { it.amount } }
+    val totals = days.map { d -> state.spending.filter { it.timestamp.toLocalDate() == d }.sumOf { it.amount } }
     val max = totals.maxOrNull()?.takeIf { it > 0 } ?: 1.0
 
     var started by remember { mutableStateOf(false) }
@@ -329,7 +345,7 @@ private fun WeekCard(state: AppState, today: LocalDate) {
 
 @Composable
 private fun CategoryCard(state: AppState, today: LocalDate, monthTotal: Double) {
-    val split = state.expenses
+    val split = state.spending
         .filter { val d = it.timestamp.toLocalDate(); d.year == today.year && d.month == today.month }
         .groupBy { it.category }
         .mapValues { (_, v) -> v.sumOf { it.amount } }
@@ -419,6 +435,8 @@ private fun ExpenseRow(e: Expense, currency: String, onClick: () -> Unit) {
     val via = when (e.source) {
         Source.WALLET -> "Tap & Pay" + (e.card?.let { " ••$it" } ?: "")
         Source.MANUAL -> "Manual"
+        Source.RECURRING -> "🔁 Plan"
+        Source.IMPORT -> "Imported"
     }
     Row(
         Modifier
@@ -450,8 +468,9 @@ private fun ExpenseRow(e: Expense, currency: String, onClick: () -> Unit) {
         }
         Spacer(Modifier.width(10.dp))
         Text(
-            money(-e.amount, currency),
+            if (e.income) "+" + money(e.amount, currency) else money(-e.amount, currency),
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            color = if (e.income) Tally.Mint else Tally.Text,
         )
     }
 }

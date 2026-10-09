@@ -1,6 +1,9 @@
 package app.tally.data
 
 import android.content.Context
+import app.tally.logic.Recurrence
+import app.tally.logic.StatementLine
+import app.tally.logic.StatementParser
 import app.tally.parser.Classifier
 import app.tally.parser.Learned
 import app.tally.parser.ParsedPayment
@@ -11,8 +14,9 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.util.Currency
-import java.util.Locale
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.Executors
 import kotlin.math.abs
@@ -42,9 +46,86 @@ object ExpenseStore {
         _state.value = if (file.exists()) {
             runCatching { decode(JSONObject(file.readText())) }.getOrElse { AppState() }
         } else {
-            AppState(currency = defaultCurrency())
+            AppState()
+        }
+        postDueRecurring()
+    }
+
+    // ---------- Recurring ----------
+
+    /** Posts every recurring item that has fallen due since the app last looked. */
+    fun postDueRecurring(today: LocalDate = LocalDate.now()) = mutate { s ->
+        val zone = ZoneId.systemDefault()
+        val posted = mutableListOf<Expense>()
+        val updated = s.recurring.map { r ->
+            Recurrence.due(r, today).forEach { date ->
+                posted += Expense(
+                    id = newId(),
+                    amount = r.amount,
+                    merchant = r.name,
+                    category = r.category,
+                    timestamp = date.atTime(9, 0).atZone(zone).toInstant().toEpochMilli(),
+                    source = Source.RECURRING,
+                    income = r.income,
+                    recurringId = r.id,
+                )
+            }
+            // Paused items move along too, so un-pausing never back-posts missed months.
+            r.copy(postedThroughEpochDay = maxOf(r.postedThroughEpochDay, today.toEpochDay()))
+        }
+        if (posted.isEmpty() && updated == s.recurring) s
+        else s.copy(recurring = updated, expenses = (s.expenses + posted).sortedByDescending { it.timestamp })
+    }
+
+    fun saveRecurring(r: Recurring) {
+        mutate { s -> s.copy(recurring = s.recurring.filterNot { it.id == r.id } + r) }
+        postDueRecurring()
+    }
+
+    /** Stops the item; transactions it already posted stay in your history. */
+    fun deleteRecurring(id: String) = mutate { s -> s.copy(recurring = s.recurring.filterNot { it.id == id }) }
+
+    fun setBudget(amount: Double?) = mutate { s -> s.copy(monthlyBudget = amount?.takeIf { it > 0 }) }
+
+    // ---------- Statement import ----------
+
+    /** Index-aligned with [lines]: the already-logged transaction each line matches, if any. */
+    fun findDuplicates(lines: List<StatementLine>): List<Expense?> {
+        val zone = ZoneId.systemDefault()
+        val used = mutableSetOf<String>()
+        val existing = _state.value.expenses
+        return lines.map { l ->
+            existing.firstOrNull { e ->
+                e.id !in used &&
+                    e.income == l.income &&
+                    abs(e.amount - l.amount) < 0.01 &&
+                    abs(ChronoUnit.DAYS.between(e.timestampDate(zone), l.date)) <= 3
+            }?.also { used += it.id }
         }
     }
+
+    fun import(lines: List<StatementLine>) = mutate { s ->
+        val zone = ZoneId.systemDefault()
+        val added = lines.map { l ->
+            val name = StatementParser.merchantFrom(l.description)
+            Expense(
+                id = newId(),
+                amount = l.amount,
+                merchant = name,
+                category = if (l.income) Category.INCOME else Classifier.classify(name, s.learned),
+                timestamp = l.date.atTime(12, 0).atZone(zone).toInstant().toEpochMilli(),
+                source = Source.IMPORT,
+                note = l.description.takeIf { it != name }.orEmpty(),
+                income = l.income,
+            )
+        }
+        s.copy(expenses = (s.expenses + added).sortedByDescending { it.timestamp })
+    }
+
+    private fun Expense.timestampDate(zone: ZoneId): LocalDate =
+        java.time.Instant.ofEpochMilli(timestamp).atZone(zone).toLocalDate()
+
+    // ---------- Transactions ----------
 
     fun upsert(expense: Expense) = mutate { s ->
         val others = s.expenses.filterNot { it.id == expense.id }
@@ -150,17 +231,29 @@ object ExpenseStore {
         tmp.renameTo(file)
     }
 
-    private fun defaultCurrency(): String =
-        runCatching { Currency.getInstance(Locale.getDefault()).getSymbol(Locale.getDefault()) }
-            .getOrNull()
-            ?.takeIf { it.length <= 3 }
-            ?: "$"
-
     private fun encode(s: AppState) = JSONObject().apply {
         put("version", 1)
         s.balance?.let { put("balance", it) }
         put("balanceSetAt", s.balanceSetAt)
         put("currency", s.currency)
+        s.monthlyBudget?.let { put("monthlyBudget", it) }
+        put("recurring", JSONArray().apply {
+            s.recurring.forEach { r ->
+                put(JSONObject().apply {
+                    put("id", r.id)
+                    put("name", r.name)
+                    put("amount", r.amount)
+                    put("income", r.income)
+                    put("category", r.category.name)
+                    put("frequency", r.frequency.name)
+                    put("day", r.day)
+                    put("month", r.month)
+                    put("start", r.startEpochDay)
+                    put("postedThrough", r.postedThroughEpochDay)
+                    put("active", r.active)
+                })
+            }
+        })
         put("expenses", JSONArray().apply {
             s.expenses.forEach { e ->
                 put(JSONObject().apply {
@@ -173,6 +266,8 @@ object ExpenseStore {
                     put("note", e.note)
                     e.card?.let { put("card", it) }
                     put("userTagged", e.userTagged)
+                    put("income", e.income)
+                    e.recurringId?.let { put("recurringId", it) }
                 })
             }
         })
@@ -207,6 +302,8 @@ object ExpenseStore {
                 note = e.optString("note"),
                 card = if (e.has("card")) e.getString("card") else null,
                 userTagged = e.optBoolean("userTagged"),
+                income = e.optBoolean("income"),
+                recurringId = if (e.has("recurringId")) e.getString("recurringId") else null,
             )
         }
         val captures = o.optJSONArray("captures").objects().map { c ->
@@ -227,11 +324,28 @@ object ExpenseStore {
                 }.toMap()
             }
         } ?: emptyMap()
+        val recurring = o.optJSONArray("recurring").objects().map { r ->
+            Recurring(
+                id = r.getString("id"),
+                name = r.getString("name"),
+                amount = r.getDouble("amount"),
+                income = r.optBoolean("income"),
+                category = runCatching { Category.valueOf(r.getString("category")) }.getOrDefault(Category.OTHER),
+                frequency = runCatching { Frequency.valueOf(r.getString("frequency")) }.getOrDefault(Frequency.MONTHLY),
+                day = r.getInt("day"),
+                month = r.optInt("month", 1),
+                startEpochDay = r.getLong("start"),
+                postedThroughEpochDay = r.getLong("postedThrough"),
+                active = r.optBoolean("active", true),
+            )
+        }
         return AppState(
             expenses = expenses.sortedByDescending { it.timestamp },
             balance = if (o.has("balance")) o.getDouble("balance") else null,
             balanceSetAt = o.optLong("balanceSetAt"),
-            currency = o.optString("currency", "$"),
+            currency = o.optString("currency", "€"),
+            recurring = recurring,
+            monthlyBudget = if (o.has("monthlyBudget")) o.getDouble("monthlyBudget") else null,
             captures = captures,
             learned = learned,
         )
