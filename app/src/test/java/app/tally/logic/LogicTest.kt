@@ -164,4 +164,13 @@ class LogicTest {
         assertEquals("Techniker Krankenkasse", StatementParser.merchantFrom("Techniker Krankenkasse · Beitrag 10/2026"))
         assertEquals("Hack The Box", StatementParser.merchantFrom("Hack The Box"))
     }
+
+    @Test fun billPaidEarlyIsNotCountedTwiceInTheSameMonth() {
+        // Rent is due on the 30th but September's went out on 1 October.
+        val rent = rec(1395.0, 30).copy(id = "rent", postedThroughEpochDay = d("2026-10-09").toEpochDay())
+        val paid = tx(1395.0, "2026-10-01").copy(recurringId = "rent")
+        val s = Metrics.month(listOf(paid), listOf(rent), budget = 2200.0, today = d("2026-10-09"), zone = utc)
+        assertEquals(0.0, s.upcomingFixed, 1e-9)
+        assertEquals(2200.0 - 1395.0, s.safeToSpend!!, 1e-9)
+    }
 }

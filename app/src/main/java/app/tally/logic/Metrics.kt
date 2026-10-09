@@ -91,6 +91,11 @@ object Metrics {
         fun upcoming(wantIncome: Boolean) = recurring
             .filter { it.active && it.income == wantIncome }
             .sumOf { r ->
+                // A monthly bill counts once per month: rent due on the 30th but paid on the 1st has
+                // already been paid this month, so its next due date belongs to next month's budget.
+                val paidThisMonth = r.frequency == app.tally.data.Frequency.MONTHLY &&
+                    thisMonth.any { it.recurringId == r.id }
+                if (paidThisMonth) return@sumOf 0.0
                 val from = maxOf(today, LocalDate.ofEpochDay(r.postedThroughEpochDay + 1))
                 Recurrence.occurrences(r, from, end).sumOf { r.amountOn(it) }
             }
