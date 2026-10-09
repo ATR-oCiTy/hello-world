@@ -158,7 +158,7 @@ object ExpenseStore {
         mutate { s ->
             val withoutEstimates = s.copy(expenses = s.expenses.filterNot { e -> replaces.values.any { it.id == e.id } })
             importInto(withoutEstimates, lines, batchId, fileName, balance, replaces).let { next ->
-                next.copy(skippedImports = (next.skippedImports + skipped.map(ImportMatcher::fingerprint)).takeLast(MAX_SKIPPED).toSet())
+                next.copy(skippedImports = (next.skippedImports + skipped.map(ImportMatcher::fingerprint)).toList().takeLast(MAX_SKIPPED).toSet())
             }
         }
         return batchId
