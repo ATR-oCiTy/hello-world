@@ -93,34 +93,51 @@ object ExpenseStore {
     fun findDuplicates(lines: List<StatementLine>): List<Expense?> {
         val zone = ZoneId.systemDefault()
         val used = mutableSetOf<String>()
-        val existing = _state.value.expenses
+        val existing = _state.value.expenses.map { it to it.timestampDate(zone) }
         return lines.map { l ->
-            existing.firstOrNull { e ->
-                e.id !in used &&
-                    e.income == l.income &&
-                    abs(e.amount - l.amount) < 0.01 &&
-                    abs(ChronoUnit.DAYS.between(e.timestampDate(zone), l.date)) <= 3
-            }?.also { used += it.id }
+            existing
+                .filter { (e, d) ->
+                    val days = abs(ChronoUnit.DAYS.between(d, l.date))
+                    e.id !in used && e.income == l.income && abs(e.amount - l.amount) < 0.01 &&
+                        // Re-importing the same statement matches exactly; taps and plans can be a few days off.
+                        if (e.source == Source.IMPORT) days == 0L else days <= 3
+                }
+                .minByOrNull { (_, d) -> abs(ChronoUnit.DAYS.between(d, l.date)) }
+                ?.first
+                ?.also { used += it.id }
         }
     }
 
     fun import(lines: List<StatementLine>) = mutate { s ->
         val zone = ZoneId.systemDefault()
-        val added = lines.map { l ->
-            val name = StatementParser.merchantFrom(l.description)
+        val added = lines.mapIndexed { i, l ->
+            val name = l.merchant ?: StatementParser.merchantFrom(l.description)
+            val note = if (l.merchant != null) l.note else l.description.takeIf { it != name }.orEmpty()
+            val transfer = l.kind.contains("transfer", ignoreCase = true)
             Expense(
                 id = newId(),
                 amount = l.amount,
                 merchant = name,
-                category = if (l.income) Category.INCOME else Classifier.classify(name, s.learned),
-                timestamp = l.date.atTime(12, 0).atZone(zone).toInstant().toEpochMilli(),
+                category = when {
+                    // Money in from a transfer is income; a positive card row is a refund, so keep its category.
+                    l.income && (transfer || l.kind.isEmpty()) -> Category.INCOME
+                    else -> Classifier.classify(name, s.learned).let { c ->
+                        if (c == Category.OTHER && note.isNotEmpty()) Classifier.classify("$name $note", s.learned) else c
+                    }
+                },
+                // Keep the statement's order within a day.
+                timestamp = l.date.atTime(12, 0).plusSeconds(i.toLong()).atZone(zone).toInstant().toEpochMilli(),
                 source = Source.IMPORT,
-                note = l.description.takeIf { it != name }.orEmpty(),
+                note = note,
+                card = l.card,
                 income = l.income,
             )
         }
         s.copy(expenses = (s.expenses + added).sortedByDescending { it.timestamp })
     }
+
+    /** Removes everything that came from statement imports, e.g. to redo a bad one. */
+    fun removeImported() = mutate { s -> s.copy(expenses = s.expenses.filterNot { it.source == Source.IMPORT }) }
 
     private fun Expense.timestampDate(zone: ZoneId): LocalDate =
         java.time.Instant.ofEpochMilli(timestamp).atZone(zone).toLocalDate()
@@ -163,8 +180,9 @@ object ExpenseStore {
 
     fun delete(id: String) = mutate { s -> s.copy(expenses = s.expenses.filterNot { it.id == id }) }
 
-    fun setBalance(amount: Double) = mutate { s ->
-        s.copy(balance = amount, balanceSetAt = System.currentTimeMillis())
+    /** [at] is the moment the balance was true; anything logged after it adjusts it. */
+    fun setBalance(amount: Double, at: Long = System.currentTimeMillis()) = mutate { s ->
+        s.copy(balance = amount, balanceSetAt = at)
     }
 
     fun setCurrency(symbol: String) = mutate { s -> s.copy(currency = symbol) }

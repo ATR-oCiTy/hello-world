@@ -58,7 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.tally.data.Expense
 import app.tally.data.ExpenseStore
 import app.tally.data.StatementReader
-import app.tally.logic.StatementParser
+import app.tally.data.Source
 import app.tally.service.WalletListenerService
 import app.tally.ui.HomeScreen
 import app.tally.ui.ImportRow
@@ -111,6 +111,8 @@ private fun TallyRoot() {
     var lastTab by rememberSaveable { mutableStateOf(Screen.Activity) }
     var sheet by remember { mutableStateOf<Sheet?>(null) }
     var importRows by remember { mutableStateOf<List<ImportRow>>(emptyList()) }
+    var statementBalance by remember { mutableStateOf<Pair<java.time.LocalDate, Double>?>(null) }
+    var updateBalance by remember { mutableStateOf(true) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -139,14 +141,19 @@ private fun TallyRoot() {
     val pickStatement = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val lines = runCatching {
-                withContext(Dispatchers.IO) { StatementParser.parse(StatementReader.readText(context, uri)) }
+            val result = runCatching {
+                withContext(Dispatchers.Default) {
+                    val lines = StatementReader.read(context, uri)
+                    lines to ExpenseStore.findDuplicates(lines)
+                }
             }.getOrElse {
                 toast("Couldn't read that file (${it.javaClass.simpleName})")
                 return@launch
             }
-            val dupes = ExpenseStore.findDuplicates(lines)
+            val (lines, dupes) = result
             importRows = lines.mapIndexed { i, l -> ImportRow(l, dupes[i], selected = dupes[i] == null) }
+            statementBalance = lines.lastOrNull { it.balanceAfter != null }?.let { it.date to it.balanceAfter!! }
+            updateBalance = statementBalance != null
             go(Screen.Import)
         }
     }
@@ -190,6 +197,11 @@ private fun TallyRoot() {
                     onOpenAppInfo = { WalletListenerService.openAppInfo(context) },
                     onSetBalance = { sheet = Sheet.Balance },
                     onSetBudget = { sheet = Sheet.Budget },
+                    onRemoveImported = {
+                        val n = state.expenses.count { it.source == Source.IMPORT }
+                        ExpenseStore.removeImported()
+                        toast("Removed $n imported transactions")
+                    },
                     onImport = { pickStatement.launch(arrayOf("application/pdf", "text/*", "application/vnd.ms-excel", "application/octet-stream")) },
                     onCurrency = { ExpenseStore.setCurrency(it) },
                     onForget = { ExpenseStore.forget(it) },
@@ -198,11 +210,27 @@ private fun TallyRoot() {
                 Screen.Import -> ImportScreen(
                     rows = importRows,
                     currency = state.currency,
+                    previousImports = state.expenses.count { it.source == Source.IMPORT },
+                    statementBalance = statementBalance,
+                    updateBalance = updateBalance,
+                    onToggleBalance = { updateBalance = !updateBalance },
                     onBack = { go(Screen.Settings) },
                     onChange = { i, row -> importRows = importRows.toMutableList().also { it[i] = row } },
+                    onSelectAll = { on -> importRows = importRows.map { it.copy(selected = on) } },
+                    onReplacePrevious = {
+                        ExpenseStore.removeImported()
+                        val dupes = ExpenseStore.findDuplicates(importRows.map { it.line })
+                        importRows = importRows.mapIndexed { i, r -> r.copy(duplicate = dupes[i], selected = dupes[i] == null) }
+                        toast("Removed earlier imports")
+                    },
                     onImport = {
                         val chosen = importRows.filter { it.selected }.map { it.line }
                         ExpenseStore.import(chosen)
+                        val sb = statementBalance
+                        if (updateBalance && sb != null) {
+                            val endOfDay = sb.first.atTime(23, 59, 59).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+                            ExpenseStore.setBalance(sb.second, endOfDay)
+                        }
                         importRows = emptyList()
                         go(Screen.Activity)
                         toast("Imported ${chosen.size} transactions")

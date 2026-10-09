@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import app.tally.data.Expense
 import app.tally.logic.StatementLine
 import app.tally.ui.theme.Tally
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 data class ImportRow(val line: StatementLine, val duplicate: Expense?, val selected: Boolean)
@@ -45,8 +46,14 @@ data class ImportRow(val line: StatementLine, val duplicate: Expense?, val selec
 fun ImportScreen(
     rows: List<ImportRow>,
     currency: String,
+    previousImports: Int,
+    statementBalance: Pair<LocalDate, Double>?,
+    updateBalance: Boolean,
+    onToggleBalance: () -> Unit,
     onBack: () -> Unit,
     onChange: (index: Int, row: ImportRow) -> Unit,
+    onSelectAll: (Boolean) -> Unit,
+    onReplacePrevious: () -> Unit,
     onImport: () -> Unit,
 ) {
     val selected = rows.count { it.selected }
@@ -89,6 +96,50 @@ fun ImportScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = Tally.Muted,
                 )
+            }
+            if (previousImports > 0 && rows.isNotEmpty()) {
+                item {
+                    GlassCard(padding = 16.dp) {
+                        Text("$previousImports imported transactions already in Tally", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "If an earlier import came out wrong, remove those first so this one starts clean.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Tally.Muted,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Chip("Remove earlier imports", selected = false, accent = Tally.Red, onClick = onReplacePrevious)
+                    }
+                }
+            }
+            if (statementBalance != null) {
+                item {
+                    GlassCard(Modifier.pressable(onToggleBalance), padding = 16.dp) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CheckBox(updateBalance)
+                            Spacer(Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    "Set balance to ${money(statementBalance.second, currency)}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    "From the statement, as of ${statementBalance.first.format(DateTimeFormatter.ofPattern("d MMM yyyy"))}. " +
+                                        "Anything after that keeps adjusting it.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Tally.Muted,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (rows.isNotEmpty()) {
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Chip("Select all", selected = selected == rows.size) { onSelectAll(true) }
+                        Chip("Select none", selected = selected == 0) { onSelectAll(false) }
+                    }
+                }
             }
             if (rows.isEmpty()) {
                 item {
@@ -134,20 +185,13 @@ private fun ImportRowView(row: ImportRow, currency: String, onToggle: () -> Unit
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier
-                .size(26.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(if (row.selected) Tally.Pink else Tally.SurfaceHi),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (row.selected) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-        }
+        CheckBox(row.selected)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(l.description, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(l.merchant ?: l.description, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(
                 l.date.format(DateTimeFormatter.ofPattern("d MMM yyyy")) +
+                    (if (l.kind.isNotEmpty()) " · ${l.kind}" else "") +
                     (row.duplicate?.let { " · already logged as ${it.merchant}" } ?: ""),
                 style = MaterialTheme.typography.labelSmall,
                 color = if (row.duplicate != null) Tally.Orange else Tally.Muted,
@@ -171,5 +215,18 @@ private fun ImportRowView(row: ImportRow, currency: String, onToggle: () -> Unit
                     .padding(horizontal = 10.dp, vertical = 3.dp),
             ) { Text("±", style = MaterialTheme.typography.labelLarge, color = Tally.Muted) }
         }
+    }
+}
+
+@Composable
+private fun CheckBox(checked: Boolean) {
+    Box(
+        Modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (checked) Tally.Pink else Tally.SurfaceHi),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
     }
 }

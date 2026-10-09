@@ -10,6 +10,14 @@ data class StatementLine(
     val amount: Double,
     val income: Boolean,
     val description: String,
+    /** Clean payee name when the statement format provides one. */
+    val merchant: String? = null,
+    val note: String = "",
+    val card: String? = null,
+    /** The bank's own label, e.g. "Card transactions", "Direct debit", "Incoming transfer". */
+    val kind: String = "",
+    /** Account balance right after this transaction, when the statement shows it. */
+    val balanceAfter: Double? = null,
 )
 
 /**

@@ -56,6 +56,7 @@ fun SettingsScreen(
     onSetBalance: () -> Unit,
     onSetBudget: () -> Unit,
     onImport: () -> Unit,
+    onRemoveImported: () -> Unit,
     onCurrency: (String) -> Unit,
     onForget: (String) -> Unit,
     onErase: () -> Unit,
@@ -254,6 +255,20 @@ fun SettingsScreen(
                 item { Text("Nothing captured yet.", color = Tally.Faint, modifier = Modifier.padding(start = 8.dp)) }
             }
             items(state.captures) { CaptureRow(it) }
+        }
+
+        val imported = state.expenses.count { it.source == app.tally.data.Source.IMPORT }
+        if (imported > 0) {
+            item {
+                GlassCard(Modifier.pressable(onRemoveImported)) {
+                    Text("Remove imported transactions ($imported)", style = MaterialTheme.typography.titleMedium, color = Tally.Orange)
+                    Text(
+                        "Undo statement imports, e.g. to redo one that went wrong. Taps, manual entries and plans stay.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Tally.Muted,
+                    )
+                }
+            }
         }
 
         item {
