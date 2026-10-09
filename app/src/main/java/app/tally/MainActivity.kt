@@ -186,11 +186,17 @@ private fun TallyRoot() {
                     onSettings = { go(Screen.Settings) },
                     onSetBudget = { sheet = Sheet.Budget },
                     onSetBalance = { sheet = Sheet.Balance },
+                    onOpenPlans = { go(Screen.Plans) },
                 )
                 Screen.Plans -> PlansScreen(
                     state = state,
                     onSettings = { go(Screen.Settings) },
                     onEdit = { sheet = Sheet.EditRecurring(it) },
+                    onAddSuggestion = {
+                        ExpenseStore.addSuggestion(it)
+                        toast("Added ${it.name}. Tap it to adjust")
+                    },
+                    onDismissSuggestion = { ExpenseStore.dismissSuggestion(it) },
                 )
                 Screen.Settings -> SettingsScreen(
                     state = state,

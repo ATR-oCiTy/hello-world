@@ -10,6 +10,7 @@ object Recurrence {
     /** Due dates of [r] between [from] and [to], both inclusive, never before its start. */
     fun occurrences(r: Recurring, from: LocalDate, to: LocalDate): List<LocalDate> {
         val start = maxOf(from, LocalDate.ofEpochDay(r.startEpochDay))
+        val to = r.endEpochDay?.let { minOf(to, LocalDate.ofEpochDay(it)) } ?: to
         if (start > to) return emptyList()
         val out = mutableListOf<LocalDate>()
         var ym = YearMonth.from(start)

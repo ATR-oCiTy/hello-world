@@ -76,7 +76,7 @@ fun rememberInsights(state: AppState): Insights {
             dailySpend = daily,
             runway = balance?.let { Metrics.runway(it, today, daily, state.recurring) },
             budgetRunway = if (balance != null && state.monthlyBudget != null) {
-                Metrics.runway(balance, today, Metrics.budgetDailySpend(state.monthlyBudget, state.recurring), state.recurring)
+                Metrics.runway(balance, today, Metrics.budgetDailySpend(state.monthlyBudget, state.recurring, today), state.recurring)
             } else null,
         )
     }
@@ -95,6 +95,7 @@ fun InsightsScreen(
     onSettings: () -> Unit,
     onSetBudget: () -> Unit,
     onSetBalance: () -> Unit,
+    onOpenPlans: () -> Unit,
 ) {
     val insights = rememberInsights(state)
     val today = LocalDate.now()
@@ -107,6 +108,19 @@ fun InsightsScreen(
     ) {
         item { ScreenHeader("Am I overspending?", "Insights", onSettings) }
         item { RunwayHero(insights, state, cur, onSetBalance) }
+        if (state.recurring.none { it.income }) {
+            item {
+                GlassCard(Modifier.pressable(onOpenPlans), padding = 16.dp) {
+                    Text("This forecast has no income yet", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Add your salary (and rent, insurance…) as plans so the runway counts them. " +
+                            "Tally can spot them in your imported history →",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Tally.Muted,
+                    )
+                }
+            }
+        }
         item { BudgetCard(insights.month, cur, onSetBudget) }
         item { MonthTiles(insights.month, cur) }
         item { TrendCard(state, today) }
@@ -386,8 +400,9 @@ private fun TrendCard(state: AppState, today: LocalDate) {
 @Composable
 private fun PaceCard(insights: Insights, state: AppState, cur: String) {
     val m = insights.month
-    val fixedOut = state.recurring.filter { it.active && !it.income }.sumOf { it.monthlyAmount }
-    val fixedIn = state.recurring.filter { it.active && it.income }.sumOf { it.monthlyAmount }
+    val today = LocalDate.now()
+    val fixedOut = state.recurring.filter { !it.income }.sumOf { it.monthlyAmountOn(today) }
+    val fixedIn = state.recurring.filter { it.income }.sumOf { it.monthlyAmountOn(today) }
     val vsLast = if (m.lastMonthToDate > 0) (m.spent - m.lastMonthToDate) / m.lastMonthToDate * 100 else null
     GlassCard {
         SectionLabel("The shape of your month")

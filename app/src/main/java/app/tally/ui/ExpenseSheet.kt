@@ -171,6 +171,7 @@ private fun AmountField(value: String, currency: String, onChange: (String) -> U
 private fun InputField(
     value: String,
     placeholder: String,
+    keyboardType: KeyboardType = KeyboardType.Text,
     onChange: (String) -> Unit,
 ) {
     val shape = RoundedCornerShape(18.dp)
@@ -180,7 +181,7 @@ private fun InputField(
         singleLine = true,
         textStyle = MaterialTheme.typography.bodyLarge.copy(color = Tally.Text),
         cursorBrush = SolidColor(Tally.Pink),
-        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, keyboardType = keyboardType),
         modifier = Modifier.fillMaxWidth(),
         decorationBox = { inner ->
             Box(
@@ -406,6 +407,12 @@ private fun RecurringForm(
     var month by remember { mutableStateOf(existing?.month ?: today.monthValue) }
     val active = existing?.active ?: true
     var skipToday by remember { mutableStateOf(false) }
+    var changes by remember { mutableStateOf(existing?.changes.orEmpty()) }
+    var endEpochDay by remember { mutableStateOf(existing?.endEpochDay) }
+    var addingChange by remember { mutableStateOf(false) }
+    var changeAmount by remember { mutableStateOf("") }
+    var changeDate by remember { mutableStateOf(today.plusMonths(1).withDayOfMonth(1)) }
+    var picking by remember { mutableStateOf<String?>(null) }
 
     val start = existing?.startEpochDay ?: (if (skipToday) today.plusDays(1) else today).toEpochDay()
     val draft = Recurring(
@@ -420,6 +427,9 @@ private fun RecurringForm(
         startEpochDay = start,
         postedThroughEpochDay = existing?.postedThroughEpochDay ?: (today.toEpochDay() - 1),
         active = active,
+        changes = changes.sortedBy { it.fromEpochDay },
+        endEpochDay = endEpochDay,
+        matchKey = existing?.matchKey,
     )
     val next = Recurrence.nextDue(draft, today)
 
@@ -485,6 +495,54 @@ private fun RecurringForm(
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             (1..31).forEach { d -> Chip(d.toString(), selected = d == day) { day = d } }
         }
+        Spacer(Modifier.height(20.dp))
+
+        SectionLabel(if (income) "Raises & changes" else "Price changes")
+        Spacer(Modifier.height(6.dp))
+        val fmt = DateTimeFormatter.ofPattern("d MMM yyyy")
+        changes.sortedBy { it.fromEpochDay }.forEach { c ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "From ${LocalDate.ofEpochDay(c.fromEpochDay).format(fmt)}: ${money(c.amount, currency)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { changes = changes - c }) { Text("Remove", color = Tally.Muted) }
+            }
+        }
+        if (addingChange) {
+            Spacer(Modifier.height(6.dp))
+            InputField(changeAmount, "New amount", KeyboardType.Decimal) {
+                if (amountPattern.matches(it)) changeAmount = it
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Chip("From ${changeDate.format(fmt)}", selected = false) { picking = "change" }
+                Chip("Add", selected = changeAmount.toAmount() != null, accent = Tally.Violet) {
+                    changeAmount.toAmount()?.let { a ->
+                        changes = changes.filterNot { it.fromEpochDay == changeDate.toEpochDay() } +
+                            app.tally.data.AmountChange(changeDate.toEpochDay(), a)
+                        changeAmount = ""
+                        addingChange = false
+                    }
+                }
+            }
+        } else {
+            Chip(if (income) "+ Schedule a raise" else "+ Schedule a change", selected = false, accent = Tally.Violet) {
+                addingChange = true
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        SectionLabel("Ends")
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Chip("Never", selected = endEpochDay == null) { endEpochDay = null }
+            Chip(
+                endEpochDay?.let { "On " + LocalDate.ofEpochDay(it).format(fmt) } ?: "Pick end date…",
+                selected = endEpochDay != null,
+            ) { picking = "end" }
+        }
         Spacer(Modifier.height(16.dp))
 
         Text(
@@ -524,4 +582,27 @@ private fun RecurringForm(
             )
         }
     }
+
+    picking?.let { which ->
+        val initial = if (which == "end") endEpochDay?.let(LocalDate::ofEpochDay) ?: today.plusMonths(6) else changeDate
+        PickDate(initial, onDismiss = { picking = null }) { d ->
+            if (which == "end") endEpochDay = d.toEpochDay() else changeDate = d
+            picking = null
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PickDate(initial: LocalDate, onDismiss: () -> Unit, onPicked: (LocalDate) -> Unit) {
+    val state = rememberDatePickerState(initialSelectedDateMillis = initial.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = {
+                state.selectedDateMillis?.let { onPicked(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()) } ?: onDismiss()
+            }) { Text("Done", color = Tally.Pink) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Tally.Muted) } },
+    ) { DatePicker(state = state) }
 }

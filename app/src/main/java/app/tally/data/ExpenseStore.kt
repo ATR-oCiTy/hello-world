@@ -2,6 +2,8 @@ package app.tally.data
 
 import android.content.Context
 import app.tally.logic.Recurrence
+import app.tally.logic.RecurringDetector
+import app.tally.logic.Suggestion
 import app.tally.logic.StatementLine
 import app.tally.logic.StatementParser
 import app.tally.parser.Classifier
@@ -61,7 +63,7 @@ object ExpenseStore {
             Recurrence.due(r, today).forEach { date ->
                 posted += Expense(
                     id = newId(),
-                    amount = r.amount,
+                    amount = r.amountOn(date),
                     merchant = r.name,
                     category = r.category,
                     timestamp = date.atTime(9, 0).atZone(zone).toInstant().toEpochMilli(),
@@ -78,12 +80,53 @@ object ExpenseStore {
     }
 
     fun saveRecurring(r: Recurring) {
-        mutate { s -> s.copy(recurring = s.recurring.filterNot { it.id == r.id } + r) }
+        mutate { s -> s.copy(recurring = s.recurring.filterNot { it.id == r.id } + r, expenses = link(s.expenses, r)) }
         postDueRecurring()
     }
 
     /** Stops the item; transactions it already posted stay in your history. */
-    fun deleteRecurring(id: String) = mutate { s -> s.copy(recurring = s.recurring.filterNot { it.id == id }) }
+    fun deleteRecurring(id: String) = mutate { s ->
+        s.copy(
+            recurring = s.recurring.filterNot { it.id == id },
+            expenses = s.expenses.map { if (it.recurringId == id && it.source != Source.RECURRING) it.copy(recurringId = null) else it },
+        )
+    }
+
+    /** Turns a detected series into a plan that carries on from its last payment. */
+    fun addSuggestion(sug: Suggestion) = saveRecurring(
+        Recurring(
+            id = newId(),
+            name = sug.name,
+            amount = sug.amount,
+            income = sug.income,
+            category = sug.category,
+            frequency = Frequency.MONTHLY,
+            day = sug.day,
+            startEpochDay = sug.lastDate.toEpochDay() + 1,
+            // Anything due between the last payment on record and today gets posted now.
+            postedThroughEpochDay = sug.lastDate.toEpochDay(),
+            matchKey = sug.matchKey,
+        ),
+    )
+
+    fun dismissSuggestion(sug: Suggestion) = mutate { s -> s.copy(dismissedSuggestions = s.dismissedSuggestions + sug.id) }
+
+    /**
+     * Marks past bank transactions that a plan stands for, so they count as fixed costs (not
+     * day-to-day spending) and the forecast doesn't count them twice.
+     */
+    private fun link(expenses: List<Expense>, r: Recurring): List<Expense> {
+        val keys = r.matchKeys().toSet()
+        if (keys.isEmpty()) return expenses
+        val zone = ZoneId.systemDefault()
+        return expenses.map { e ->
+            val planned = r.amountOn(e.timestampDate(zone))
+            if (e.recurringId == null && e.source != Source.RECURRING && e.income == r.income &&
+                RecurringDetector.seriesKey(e.merchant) in keys &&
+                abs(e.amount - planned) <= planned * 0.5
+            ) e.copy(recurringId = r.id) else e
+        }
+    }
 
     fun setBudget(amount: Double?) = mutate { s -> s.copy(monthlyBudget = amount?.takeIf { it > 0 }) }
 
@@ -161,8 +204,9 @@ object ExpenseStore {
             previousBalance = s.balance,
             previousBalanceSetAt = s.balanceSetAt,
         )
+        val linked = s.recurring.fold(added) { acc, r -> link(acc, r) }
         return s.copy(
-            expenses = (s.expenses + added).sortedByDescending { it.timestamp },
+            expenses = (s.expenses + linked).sortedByDescending { it.timestamp },
             imports = s.imports + batch,
             balance = balance?.first ?: s.balance,
             balanceSetAt = balance?.second ?: s.balanceSetAt,
@@ -310,6 +354,7 @@ object ExpenseStore {
         put("balanceSetAt", s.balanceSetAt)
         put("currency", s.currency)
         s.monthlyBudget?.let { put("monthlyBudget", it) }
+        put("dismissedSuggestions", JSONArray(s.dismissedSuggestions.toList()))
         put("imports", JSONArray().apply {
             s.imports.forEach { b ->
                 put(JSONObject().apply {
@@ -339,6 +384,11 @@ object ExpenseStore {
                     put("start", r.startEpochDay)
                     put("postedThrough", r.postedThroughEpochDay)
                     put("active", r.active)
+                    r.endEpochDay?.let { put("end", it) }
+                    r.matchKey?.let { put("matchKey", it) }
+                    put("changes", JSONArray().apply {
+                        r.changes.forEach { c -> put(JSONObject().apply { put("from", c.fromEpochDay); put("amount", c.amount) }) }
+                    })
                 })
             }
         })
@@ -427,6 +477,9 @@ object ExpenseStore {
                 startEpochDay = r.getLong("start"),
                 postedThroughEpochDay = r.getLong("postedThrough"),
                 active = r.optBoolean("active", true),
+                endEpochDay = if (r.has("end")) r.getLong("end") else null,
+                matchKey = if (r.has("matchKey")) r.getString("matchKey") else null,
+                changes = r.optJSONArray("changes").objects().map { c -> AmountChange(c.getLong("from"), c.getDouble("amount")) },
             )
         }
         return AppState(
@@ -436,6 +489,8 @@ object ExpenseStore {
             currency = o.optString("currency", "€"),
             recurring = recurring,
             monthlyBudget = if (o.has("monthlyBudget")) o.getDouble("monthlyBudget") else null,
+            dismissedSuggestions = o.optJSONArray("dismissedSuggestions")
+                ?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }.orEmpty(),
             imports = o.optJSONArray("imports").objects().map { b ->
                 ImportBatch(
                     id = b.getString("id"),

@@ -66,7 +66,7 @@ object Metrics {
         window: Int = 60,
     ): Double {
         val from = today.minusDays(window - 1L)
-        val variable = expenses.filter { !it.income && it.source != Source.RECURRING }
+        val variable = expenses.filter { !it.income && !it.isPlanned }
         val inWindow = variable.filter { it.date(zone) in from..today }
         if (inWindow.isEmpty()) return 0.0
         val first = variable.minOf { it.date(zone) }
@@ -86,13 +86,13 @@ object Metrics {
         val thisMonth = expenses.filter { YearMonth.from(it.date(zone)) == ym }
         val spent = thisMonth.filter { !it.income }.sumOf { it.amount }
         val income = thisMonth.filter { it.income }.sumOf { it.amount }
-        val fixedSpent = thisMonth.filter { !it.income && it.source == Source.RECURRING }.sumOf { it.amount }
+        val fixedSpent = thisMonth.filter { !it.income && it.isPlanned }.sumOf { it.amount }
 
         fun upcoming(wantIncome: Boolean) = recurring
             .filter { it.active && it.income == wantIncome }
             .sumOf { r ->
                 val from = maxOf(today, LocalDate.ofEpochDay(r.postedThroughEpochDay + 1))
-                Recurrence.occurrences(r, from, end).size * r.amount
+                Recurrence.occurrences(r, from, end).sumOf { r.amountOn(it) }
             }
         val upcomingFixed = upcoming(false)
         val upcomingIncome = upcoming(true)
@@ -141,7 +141,9 @@ object Metrics {
         recurring: List<Recurring>,
     ): Runway {
         val active = recurring.filter { it.active }
-        val monthlyNet = active.sumOf { if (it.income) it.monthlyAmount else -it.monthlyAmount } -
+        // Describe the month ahead, so a raise or an ending payout already shows up.
+        val ahead = today.plusMonths(1)
+        val monthlyNet = active.sumOf { if (it.income) it.monthlyAmountOn(ahead) else -it.monthlyAmountOn(ahead) } -
             dailySpend * DAYS_PER_MONTH
         if (balance < 0) return Runway(today, 0.0, monthlyNet)
 
@@ -151,7 +153,8 @@ object Metrics {
         active.forEach { r ->
             val from = maxOf(today.plusDays(1), LocalDate.ofEpochDay(r.postedThroughEpochDay + 1))
             Recurrence.occurrences(r, from, horizon).forEach { d ->
-                movements[d] = (movements[d] ?: 0.0) + if (r.income) r.amount else -r.amount
+                val amount = r.amountOn(d)
+                movements[d] = (movements[d] ?: 0.0) + if (r.income) amount else -amount
             }
         }
 
@@ -169,8 +172,8 @@ object Metrics {
     }
 
     /** Usual daily spending if you spend exactly your budget (minus fixed costs). */
-    fun budgetDailySpend(budget: Double, recurring: List<Recurring>): Double {
-        val fixed = recurring.filter { it.active && !it.income }.sumOf { it.monthlyAmount }
+    fun budgetDailySpend(budget: Double, recurring: List<Recurring>, today: LocalDate): Double {
+        val fixed = recurring.filter { !it.income }.sumOf { it.monthlyAmountOn(today) }
         return ((budget - fixed) / DAYS_PER_MONTH).coerceAtLeast(0.0)
     }
 

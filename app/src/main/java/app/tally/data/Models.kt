@@ -1,6 +1,7 @@
 package app.tally.data
 
 import app.tally.parser.Learned
+import java.time.LocalDate
 
 enum class Source { WALLET, MANUAL, RECURRING, IMPORT }
 
@@ -11,6 +12,7 @@ enum class Category(val label: String, val emoji: String, val color: Long) {
     SHOPPING("Shopping", "🛍️", 0xFFFF3D9A),
     FUN("Fun", "🎟️", 0xFF8B5CF6),
     SUBSCRIPTIONS("Subscriptions", "🔁", 0xFFA78BFA),
+    HOUSING("Rent & Home", "🏠", 0xFFF472B6),
     BILLS("Bills & Insurance", "⚡", 0xFFFFD23D),
     HEALTH("Health", "💊", 0xFF5EEAD4),
     INCOME("Income", "💶", 0xFF34E5A6),
@@ -35,6 +37,9 @@ data class Expense(
     /** The [ImportBatch] this came from, so a bad import can be removed on its own. */
     val importId: String? = null,
 ) {
+    /** Posted by a plan, or a past bank transaction that a plan stands for. */
+    val isPlanned: Boolean get() = source == Source.RECURRING || recurringId != null
+
     /** Effect on your balance: negative for spending, positive for income. */
     val signed: Double get() = if (income) amount else -amount
 }
@@ -58,10 +63,31 @@ data class Recurring(
     /** Everything up to and including this epoch day has been posted. */
     val postedThroughEpochDay: Long,
     val active: Boolean = true,
+    /** Scheduled amount changes, e.g. a raise: from that day on, [AmountChange.amount] applies. */
+    val changes: List<AmountChange> = emptyList(),
+    /** Last day it can occur (inclusive), e.g. when a blocked-account payout runs out. */
+    val endEpochDay: Long? = null,
+    /** Merchant key of the bank transactions this plan stands for (set when auto-detected). */
+    val matchKey: String? = null,
 ) {
-    /** What it costs (or brings in) per month on average. */
-    val monthlyAmount: Double get() = if (frequency == Frequency.YEARLY) amount / 12 else amount
+    fun matchKeys(): List<String> = matchKey?.split('|')?.filter { it.isNotEmpty() }.orEmpty()
+
+    fun amountOn(date: LocalDate): Double =
+        changes.filter { it.fromEpochDay <= date.toEpochDay() }.maxByOrNull { it.fromEpochDay }?.amount ?: amount
+
+    /** Active and not past its end date. */
+    fun liveOn(date: LocalDate): Boolean = active && (endEpochDay == null || endEpochDay >= date.toEpochDay())
+
+    /** What it costs (or brings in) per month on average, at the amount in force on [date]. */
+    fun monthlyAmountOn(date: LocalDate): Double =
+        if (!liveOn(date)) 0.0 else amountOn(date).let { if (frequency == Frequency.YEARLY) it / 12 else it }
+
+    /** The next scheduled change after [date], if any. */
+    fun nextChangeAfter(date: LocalDate): AmountChange? =
+        changes.filter { it.fromEpochDay > date.toEpochDay() }.minByOrNull { it.fromEpochDay }
 }
+
+data class AmountChange(val fromEpochDay: Long, val amount: Double)
 
 /** One statement import, kept so it can be undone as a unit. */
 data class ImportBatch(
@@ -101,6 +127,8 @@ data class AppState(
     /** Everything you allow yourself to spend in a month, fixed costs included. */
     val monthlyBudget: Double? = null,
     val imports: List<ImportBatch> = emptyList(),
+    /** Detected-plan suggestions you dismissed (merchant keys), so they don't come back. */
+    val dismissedSuggestions: Set<String> = emptySet(),
 ) {
     val currentBalance: Double?
         get() = balance?.let { b -> b + expenses.filter { it.timestamp > balanceSetAt }.sumOf { it.signed } }

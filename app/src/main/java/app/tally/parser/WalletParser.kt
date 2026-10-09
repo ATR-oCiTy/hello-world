@@ -105,6 +105,7 @@ object WalletParser {
             "spotify", "youtube", "disney", "prime video", "apple.com", "icloud", "google one",
             "adobe", "github", "notion", "dazn", "audible", "patreon", "subscription", "abo ",
         ),
+        Category.HOUSING to listOf("miete", "wohnung", "nebenkosten", "hausverwaltung", " rent ", "ikea"),
         Category.INCOME to listOf("gehalt", "salary", "lohn", "payroll", "stipend"),
         Category.FOOD to listOf(
             "cafe", "café", "coffee", "starbucks", "costa", "pret", "mcdonald", "kfc", "burger",
@@ -122,7 +123,7 @@ object WalletParser {
             "parking", "toll", "airline", "airways",
         ),
         Category.SHOPPING to listOf(
-            "amazon", "flipkart", "myntra", "zara", "h&m", "uniqlo", "nike", "adidas", "ikea",
+            "amazon", "flipkart", "myntra", " zara", "h&m", "uniqlo", " nike ", "adidas", "ikea",
             "apple", "store", "mall", "boutique", "decathlon", "primark", "target", "best buy",
         ),
         Category.FUN to listOf(
