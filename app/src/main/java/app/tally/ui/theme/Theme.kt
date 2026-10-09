@@ -1,9 +1,11 @@
 package app.tally.ui.theme
 
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -66,6 +68,9 @@ fun TallyTheme(content: @Composable () -> Unit) {
             error = Tally.Red,
         ),
         typography = TallyTypography,
-        content = content,
-    )
+    ) {
+        // Text and icons without an explicit colour use LocalContentColor, which is black unless a
+        // Surface sets it. The app draws its own dark backgrounds, so set it here for every screen.
+        CompositionLocalProvider(LocalContentColor provides Tally.Text, content = content)
+    }
 }
